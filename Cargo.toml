@@ -1,0 +1,16 @@
+[package]
+name = "sync2peer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+hex = "0.4.3"
+log = "0.4.34"
+notify = "8.2.0"
+notify-debouncer-full = "0.7.0"
+serde = { version = "1.0.229", features = ["derive"] }
+sha2 = "0.11.0"
+simplelog = "0.12.2"
+yaml_serde = "0.10.7"
