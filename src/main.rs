@@ -20,7 +20,8 @@ struct Args {
     config: PathBuf
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args = Args::parse();
     setup_logger()?;
 
