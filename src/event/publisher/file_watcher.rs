@@ -150,7 +150,12 @@ impl FileWatcherPublisher {
                 self.map_event_paths(&fs_event.paths, |p| Event::FileCreated { path: p.into() })
             }
             EventKind::Create(kind) if kind == CreateKind::File => {
-                self.map_event_paths(&fs_event.paths, |p| Event::FileCreated { path: p.into() })
+                let paths = fs_event
+                    .paths
+                    .iter()
+                    .filter_map(|p| if p.is_file() { Some(p.clone()) } else { None })
+                    .collect();
+                self.map_event_paths(&paths, |p| Event::FileCreated { path: p.into() })
             }
             EventKind::Remove(kind) if kind == RemoveKind::File => {
                 self.map_event_paths(&fs_event.paths, |p| Event::FileDeleted { path: p.into() })

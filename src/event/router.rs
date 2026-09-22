@@ -12,8 +12,7 @@ use crate::{
             file_receiver::FileReceiverSubscriber, file_sender::FileSenderSubscriber,
             fs_worker::FsWorkerSubscriber,
         },
-    },
-    server::FileSyncConfig,
+    }, fs_cache::FsCache, server::FileSyncConfig,
 };
 
 /// Event router
@@ -26,6 +25,8 @@ pub struct Router {
     config: Arc<FileSyncConfig>,
     /// Event debouncer tracker
     ignore_tracker: Arc<IgnoreTracker>,
+    /// Shared FS cache reference
+    fs_cache: Arc<FsCache>,
 }
 
 impl Router {
@@ -34,12 +35,14 @@ impl Router {
         data_socket: Arc<UdpSocket>,
         config: Arc<FileSyncConfig>,
         ignore_tracker: Arc<IgnoreTracker>,
+        fs_cache: Arc<FsCache>
     ) -> Self {
         Self {
             control_socket,
             data_socket,
             config,
             ignore_tracker,
+            fs_cache
         }
     }
 
@@ -63,16 +66,19 @@ impl Router {
                 self.data_socket.clone(),
                 self.config.clone(),
                 self.ignore_tracker.clone(),
+                self.fs_cache.clone()
             )))
         } else if FileSenderSubscriber::filter(ee) {
             Ok(Box::new(FileSenderSubscriber::new(
                 self.data_socket.clone(),
-                self.config.clone()
+                self.config.clone(),
+                self.fs_cache.clone()
             )))
         } else if FsWorkerSubscriber::filter(ee) {
             Ok(Box::new(FsWorkerSubscriber::new(
                 self.config.clone(),
                 self.ignore_tracker.clone(),
+                self.fs_cache.clone()
             )))
         } else {
             bail!("No appropriate subscriber available")

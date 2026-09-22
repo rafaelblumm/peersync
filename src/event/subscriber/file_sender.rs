@@ -7,12 +7,14 @@ use std::{
 };
 
 use anyhow::{Result, bail};
+use log::warn;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    conn::request::{Request, RequestData}, event::{
-        Event, EventEnvelope, EventSource, subscriber::Subscriber,
-    }, server::{DATA_SOCKET_PORT, FileSyncConfig},
+    conn::request::{Request, RequestData},
+    event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
+    fs_cache::FsCache,
+    server::{DATA_SOCKET_PORT, FileSyncConfig},
 };
 
 /// File content sender
@@ -21,12 +23,13 @@ pub struct FileSenderSubscriber {
     data_socket: Arc<UdpSocket>,
     /// Server settings shared reference
     config: Arc<FileSyncConfig>,
+    /// Shared FS cache reference
+    fs_cache: Arc<FsCache>,
 }
 
 impl Subscriber for FileSenderSubscriber {
     fn filter(ee: &EventEnvelope) -> bool {
-        matches!(ee.source, EventSource::Peer(..))
-            && matches!(ee.event, Event::UploadFile { .. })
+        matches!(ee.source, EventSource::Peer(..)) && matches!(ee.event, Event::UploadFile { .. })
     }
 
     fn act(&self, ee: &EventEnvelope) -> Result<()> {
@@ -41,8 +44,16 @@ impl Subscriber for FileSenderSubscriber {
 }
 
 impl FileSenderSubscriber {
-    pub fn new(data_socket: Arc<UdpSocket>, config: Arc<FileSyncConfig>) -> Self {
-        Self { data_socket, config }
+    pub fn new(
+        data_socket: Arc<UdpSocket>,
+        config: Arc<FileSyncConfig>,
+        fs_cache: Arc<FsCache>,
+    ) -> Self {
+        Self {
+            data_socket,
+            config,
+            fs_cache,
+        }
     }
 
     /// Send file content to peer
@@ -81,9 +92,13 @@ impl FileSenderSubscriber {
             reader.consume(length);
         }
 
+        let hash = hex::encode(hasher.finalize());
+        if let Err(e) = self.fs_cache.update_hash(path, &hash) {
+            warn!("Error updating file hash ({} = '{hash}'): {e}", path.display())
+        }
         let request = Request {
             data: RequestData::EndOfFile {
-                sha256: hex::encode(hasher.finalize()),
+                sha256: hash,
             },
         };
         let req_bytes: Box<[u8]> = request.into();

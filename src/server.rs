@@ -12,14 +12,18 @@ use std::{
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::event::{
-    EventEnvelope,
-    broker::Broker,
-    ignore_tracker::IgnoreTracker,
-    publisher::{
-        Publisher, control_listener::ControlListenerPublisher, file_watcher::FileWatcherPublisher,
+use crate::{
+    event::{
+        EventEnvelope,
+        broker::Broker,
+        ignore_tracker::IgnoreTracker,
+        publisher::{
+            Publisher, control_listener::ControlListenerPublisher,
+            file_watcher::FileWatcherPublisher,
+        },
+        router::Router,
     },
-    router::Router,
+    fs_cache::FsCache,
 };
 
 /// Server address
@@ -43,6 +47,8 @@ pub struct FileSyncConfig {
     pub tmp_dir: PathBuf,
     /// Peers IP address
     pub peers: Vec<IpAddr>,
+    /// Cache file path
+    pub cache_file: PathBuf,
 }
 
 pub struct FileSyncServer {
@@ -64,10 +70,12 @@ impl FileSyncServer {
             fs::create_dir_all(&self.config.sync_dir)?;
         }
 
+        let fs_cache = Arc::new(FsCache::load(self.config.clone())?);
+        let ignore_tracker = Arc::new(IgnoreTracker::new());
+
         let control_socket = Arc::new(UdpSocket::bind(CONTROL_SOCKET_ADDR)?);
         let data_socket = Arc::new(UdpSocket::bind(DATA_SOCKET_ADDR)?);
         let (sender, receiver) = channel();
-        let ignore_tracker = Arc::new(IgnoreTracker::new());
 
         self.get_publishers(sender, control_socket.clone(), ignore_tracker.clone())
             .into_iter()
@@ -85,6 +93,7 @@ impl FileSyncServer {
             data_socket.clone(),
             self.config.clone(),
             ignore_tracker.clone(),
+            fs_cache,
         );
         Broker::new(receiver, router).run();
 
@@ -95,7 +104,7 @@ impl FileSyncServer {
         &self,
         sender: Sender<EventEnvelope>,
         control_socket: Arc<UdpSocket>,
-        ignore_tracker: Arc<IgnoreTracker>,
+        ignore_tracker: Arc<IgnoreTracker>
     ) -> Vec<(String, Box<dyn Publisher + Send>)> {
         vec![
             (
@@ -103,15 +112,15 @@ impl FileSyncServer {
                 Box::new(ControlListenerPublisher::new(
                     sender.clone(),
                     control_socket.clone()
-                ))
+                )),
             ),
             (
                 "FileWatcherPublisherThread".into(),
                 Box::new(FileWatcherPublisher::new(
                     sender.clone(),
                     self.config.clone(),
-                    ignore_tracker.clone(),
-                ))
+                    ignore_tracker.clone()
+                )),
             ),
         ]
     }
@@ -120,7 +129,7 @@ impl FileSyncServer {
 /// Return default temporary directory
 fn get_default_tmp_dir() -> PathBuf {
     if cfg!(test) {
-        return "/tmp".into()
+        return "/tmp".into();
     }
 
     std::env::temp_dir().join("peersync")
@@ -139,13 +148,15 @@ mod tests {
             peers: vec![
                 IpAddr::V4(Ipv4Addr::new(192, 0, 0, 1)),
                 IpAddr::V4(Ipv4Addr::new(192, 0, 0, 2)),
-            ]
+            ],
+            cache_file: PathBuf::from("/tmp/cache.yaml"),
         };
         let s = "sync_dir: /mnt/sync
 tmp_dir: /tmp
 peers:
   - 192.0.0.1
   - 192.0.0.2
+cache_file: /tmp/cache.yaml
 ";
         assert_eq!(expected, yaml_serde::from_str(s).unwrap());
     }
@@ -159,12 +170,14 @@ peers:
             peers: vec![
                 IpAddr::V4(Ipv4Addr::new(192, 0, 0, 1)),
                 IpAddr::V4(Ipv4Addr::new(192, 0, 0, 2)),
-            ]
+            ],
+            cache_file: PathBuf::from("/tmp/cache.yaml"),
         };
         let s = "sync_dir: /mnt/sync
 peers:
   - 192.0.0.1
   - 192.0.0.2
+cache_file: /tmp/cache.yaml
 ";
         assert_eq!(expected, yaml_serde::from_str(s).unwrap());
     }

@@ -24,7 +24,11 @@ impl IgnoreTracker {
 
     /// Marks path to be changed by peer request
     pub fn mark(&self, path: impl Into<PathBuf>) {
-        self.entries.lock().unwrap().insert(path.into(), Instant::now());
+        self
+            .entries
+            .lock()
+            .unwrap()
+            .insert(path.into(), Instant::now());
     }
 
     /// Returns if event should be debounced, removing mark cache from map
