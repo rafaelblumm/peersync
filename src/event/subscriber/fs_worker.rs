@@ -1,19 +1,19 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::{
     event::{
         Event, EventEnvelope, EventSource, ignore_tracker::IgnoreTracker, subscriber::Subscriber,
     },
     fs_cache::FsCache,
-    server::FileSyncConfig,
+    server::FileSyncConfigRef,
 };
 
 /// General filesystem operations subscriber
 pub struct FsWorkerSubscriber {
     /// Server settings shared reference
-    config: Arc<FileSyncConfig>,
+    config: FileSyncConfigRef,
     /// Event debouncer tracker
     ignore_tracker: Arc<IgnoreTracker>,
     /// Shared FS cache reference
@@ -40,7 +40,7 @@ impl Subscriber for FsWorkerSubscriber {
 
 impl FsWorkerSubscriber {
     pub fn new(
-        config: Arc<FileSyncConfig>,
+        config: FileSyncConfigRef,
         ignore_tracker: Arc<IgnoreTracker>,
         fs_cache: Arc<FsCache>,
     ) -> Self {
@@ -83,6 +83,6 @@ impl FsWorkerSubscriber {
 
     /// Normalize complete file path
     fn normalize_path(&self, path: &PathBuf) -> PathBuf {
-        self.config.sync_dir.join(path)
+        self.config.read().unwrap().sync_dir.join(path)
     }
 }

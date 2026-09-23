@@ -19,7 +19,7 @@ use crate::{
         Event, EventEnvelope, EventSource, ignore_tracker::IgnoreTracker, subscriber::Subscriber,
     },
     fs_cache::FsCache,
-    server::FileSyncConfig,
+    server::FileSyncConfigRef,
 };
 
 /// File content receiver
@@ -29,7 +29,7 @@ pub struct FileReceiverSubscriber {
     /// Data transfer socket
     data_socket: Arc<UdpSocket>,
     /// Server settings shared reference
-    config: Arc<FileSyncConfig>,
+    config: FileSyncConfigRef,
     /// Event debouncer tracker
     ignore_tracker: Arc<IgnoreTracker>,
     /// Shared FS cache reference
@@ -56,7 +56,7 @@ impl FileReceiverSubscriber {
     pub fn new(
         control_socket: Arc<UdpSocket>,
         data_socket: Arc<UdpSocket>,
-        config: Arc<FileSyncConfig>,
+        config: FileSyncConfigRef,
         ignore_tracker: Arc<IgnoreTracker>,
         fs_cache: Arc<FsCache>,
     ) -> Self {
@@ -82,7 +82,7 @@ impl FileReceiverSubscriber {
         );
         self.control_socket.send_to(&req_bytes, addr)?;
 
-        let tmp_path = self.config.tmp_dir.join(path);
+        let tmp_path = self.config.read().unwrap().tmp_dir.join(path);
         if let Some(p) = tmp_path.parent() {
             fs::create_dir_all(p)?;
         }
@@ -125,7 +125,7 @@ impl FileReceiverSubscriber {
             None => bail!("EOF not received"),
         }
 
-        let target_path = self.config.sync_dir.join(path);
+        let target_path = self.config.read().unwrap().sync_dir.join(path);
         debug!(
             "Moving tmp file to sync dir: {} -> {}",
             tmp_path.display(),

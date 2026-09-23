@@ -3,7 +3,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, RwLock,
         mpsc::{Sender, channel},
     },
     thread::{self},
@@ -37,9 +37,12 @@ const CONTROL_SOCKET_ADDR: SocketAddr = SocketAddr::new(SERVER_ADDR, CONTROL_SOC
 /// Data socket address
 const DATA_SOCKET_ADDR: SocketAddr = SocketAddr::new(SERVER_ADDR, DATA_SOCKET_PORT);
 
-/// File-sync server settings
+/// App server settings shared ref
+pub type FileSyncConfigRef = Arc<RwLock<FileSyncConfig>>;
+
+/// File-sync server settings serialization and deserialization aux struct
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
-pub struct FileSyncConfig {
+struct FileSyncConfigDataAux {
     /// Synchronized directory
     pub sync_dir: PathBuf,
     /// Download temporary directory
@@ -51,23 +54,76 @@ pub struct FileSyncConfig {
     pub cache_file: PathBuf,
 }
 
+impl FileSyncConfigDataAux {
+    fn build(self, config_file: PathBuf) -> FileSyncConfig {
+        FileSyncConfig {
+            config_file,
+            sync_dir: self.sync_dir,
+            tmp_dir: self.tmp_dir,
+            peers: self.peers,
+            cache_file: self.cache_file,
+        }
+    }
+}
+
+/// File-sync server settings
+#[derive(Debug, PartialEq)]
+pub struct FileSyncConfig {
+    /// Config file path
+    pub config_file: PathBuf,
+    /// Synchronized directory
+    pub sync_dir: PathBuf,
+    /// Download temporary directory
+    pub tmp_dir: PathBuf,
+    /// Peers IP address
+    pub peers: Vec<IpAddr>,
+    /// Cache file path
+    pub cache_file: PathBuf,
+}
+
+impl Into<FileSyncConfigDataAux> for &FileSyncConfig {
+    fn into(self) -> FileSyncConfigDataAux {
+        FileSyncConfigDataAux {
+            sync_dir: self.sync_dir.clone(),
+            tmp_dir: self.tmp_dir.clone(),
+            peers: self.peers.clone(),
+            cache_file: self.cache_file.clone(),
+        }
+    }
+}
+
+impl FileSyncConfig {
+    pub fn load(config_file: PathBuf) -> Result<Self> {
+        let content = fs::read_to_string(&config_file)?;
+        let data: FileSyncConfigDataAux = yaml_serde::from_str(&content)?;
+
+        Ok(data.build(config_file))
+    }
+
+    pub fn serialize(&self) -> Result<String> {
+        let aux: FileSyncConfigDataAux = self.into();
+
+        yaml_serde::to_string(&aux).map_err(anyhow::Error::msg)
+    }
+}
+
 pub struct FileSyncServer {
-    config: Arc<FileSyncConfig>,
+    config: FileSyncConfigRef,
 }
 
 impl FileSyncServer {
     pub fn new(config_file: PathBuf) -> Result<Self> {
-        let content = fs::read_to_string(config_file)?;
-        let config = yaml_serde::from_str(&content)?;
+        let config = FileSyncConfig::load(config_file)?;
 
         Ok(Self {
-            config: Arc::new(config),
+            config: Arc::new(RwLock::new(config)),
         })
     }
 
     pub fn serve(&self) -> Result<()> {
-        if !self.config.sync_dir.exists() {
-            fs::create_dir_all(&self.config.sync_dir)?;
+        let sync_dir = self.config.read().unwrap().sync_dir.clone();
+        if !sync_dir.exists() {
+            fs::create_dir_all(&sync_dir)?;
         }
 
         let fs_cache = Arc::new(FsCache::load(self.config.clone())?);
@@ -104,14 +160,20 @@ impl FileSyncServer {
         &self,
         sender: Sender<EventEnvelope>,
         control_socket: Arc<UdpSocket>,
-        ignore_tracker: Arc<IgnoreTracker>
+        ignore_tracker: Arc<IgnoreTracker>,
     ) -> Vec<(String, Box<dyn Publisher + Send>)> {
         vec![
+            (
+                "TestPublisherThread".into(),
+                Box::new(crate::event::publisher::TestPublisher {
+                    sender: sender.clone(),
+                }),
+            ),
             (
                 "ControlListenerPublisherThread".into(),
                 Box::new(ControlListenerPublisher::new(
                     sender.clone(),
-                    control_socket.clone()
+                    control_socket.clone(),
                 )),
             ),
             (
@@ -119,7 +181,7 @@ impl FileSyncServer {
                 Box::new(FileWatcherPublisher::new(
                     sender.clone(),
                     self.config.clone(),
-                    ignore_tracker.clone()
+                    ignore_tracker.clone(),
                 )),
             ),
         ]
@@ -142,7 +204,7 @@ mod tests {
     /// Test config file parse with all optional fields
     #[test]
     fn test_parse_config_complete() {
-        let expected = FileSyncConfig {
+        let expected = FileSyncConfigDataAux {
             sync_dir: PathBuf::from("/mnt/sync"),
             tmp_dir: PathBuf::from("/tmp"),
             peers: vec![
@@ -164,7 +226,7 @@ cache_file: /tmp/cache.yaml
     /// Test config file parse with no optional fields
     #[test]
     fn test_parse_config_required() {
-        let expected = FileSyncConfig {
+        let expected = FileSyncConfigDataAux {
             sync_dir: PathBuf::from("/mnt/sync"),
             tmp_dir: PathBuf::from("/tmp"),
             peers: vec![

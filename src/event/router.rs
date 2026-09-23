@@ -5,14 +5,10 @@ use log::debug;
 
 use crate::{
     event::{
-        EventEnvelope,
-        ignore_tracker::IgnoreTracker,
-        subscriber::{
-            Subscriber, event_announcer::EventAnnouncerSubscriber,
-            file_receiver::FileReceiverSubscriber, file_sender::FileSenderSubscriber,
-            fs_worker::FsWorkerSubscriber,
+        EventEnvelope, ignore_tracker::IgnoreTracker, subscriber::{
+            Subscriber, config_updater::ConfigUpdaterSubscriber, event_announcer::EventAnnouncerSubscriber, file_receiver::FileReceiverSubscriber, file_sender::FileSenderSubscriber, fs_worker::FsWorkerSubscriber,
         },
-    }, fs_cache::FsCache, server::FileSyncConfig,
+    }, fs_cache::FsCache, server::FileSyncConfigRef,
 };
 
 /// Event router
@@ -22,7 +18,7 @@ pub struct Router {
     /// Data socket
     data_socket: Arc<UdpSocket>,
     /// Server settings shared reference
-    config: Arc<FileSyncConfig>,
+    config: FileSyncConfigRef,
     /// Event debouncer tracker
     ignore_tracker: Arc<IgnoreTracker>,
     /// Shared FS cache reference
@@ -33,7 +29,7 @@ impl Router {
     pub fn new(
         control_socket: Arc<UdpSocket>,
         data_socket: Arc<UdpSocket>,
-        config: Arc<FileSyncConfig>,
+        config: FileSyncConfigRef,
         ignore_tracker: Arc<IgnoreTracker>,
         fs_cache: Arc<FsCache>
     ) -> Self {
@@ -55,7 +51,9 @@ impl Router {
 
     /// Finds appropriate subscriber
     fn find_subscriber(&self, ee: &EventEnvelope) -> Result<Box<dyn Subscriber>> {
-        if EventAnnouncerSubscriber::filter(ee) {
+        if ConfigUpdaterSubscriber::filter(ee) {
+            Ok(Box::new(ConfigUpdaterSubscriber::new(self.config.clone())))
+        } else if EventAnnouncerSubscriber::filter(ee) {
             Ok(Box::new(EventAnnouncerSubscriber::new(
                 self.control_socket.clone(),
                 self.config.clone()

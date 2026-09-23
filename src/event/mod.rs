@@ -1,4 +1,4 @@
-use std::{fmt::{Display, Formatter}, net::SocketAddr, path::PathBuf};
+use std::{fmt::{Display, Formatter}, net::{IpAddr, SocketAddr}, path::PathBuf};
 
 pub mod broker;
 pub mod ignore_tracker;
@@ -44,6 +44,11 @@ impl Display for EventSource {
 /// Application event
 #[derive(Debug, PartialEq)]
 pub enum Event {
+    /// New peer added
+    PeerAdded {
+        /// Peer address
+        addr: IpAddr,
+    },
     /// New file created
     FileCreated {
         /// File path
@@ -85,6 +90,7 @@ impl Display for Event {
             ),
             Event::DownloadFile { path } => format!("DownloadFile({})", path.display()),
             Event::UploadFile { path } => format!("UploadFile({})", path.display()),
+            Event::PeerAdded { addr } => format!("PeerAdded({addr})"),
         };
 
         write!(f, "{fmt}")
