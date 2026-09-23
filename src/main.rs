@@ -1,5 +1,6 @@
 pub mod event;
 pub mod conn;
+pub mod fs_cache;
 pub mod server;
 
 use std::path::PathBuf;
@@ -11,16 +12,17 @@ use simplelog::{Color, ColorChoice, ConfigBuilder, TermLogger, TerminalMode};
 
 use crate::server::FileSyncServer;
 
-/// Simple program to greet a person
+/// Peer-to-peer UDP file sync application
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Name of the person to greet
+    /// Application settings file
     #[arg(short, long)]
     config: PathBuf
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let args = Args::parse();
     setup_logger()?;
 

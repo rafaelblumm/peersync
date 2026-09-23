@@ -1,9 +1,13 @@
 use std::{
-    fs::{self, File}, io::{BufWriter, Write}, net::{SocketAddr, UdpSocket}, path::PathBuf, sync::Arc,
+    fs::{self, File},
+    io::{BufWriter, Write},
+    net::{SocketAddr, UdpSocket},
+    path::PathBuf,
+    sync::Arc,
 };
 
 use anyhow::{Result, bail};
-use log::debug;
+use log::{debug, warn};
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -11,7 +15,10 @@ use crate::{
         Request,
         RequestData::{self, GetFileContent},
     },
-    event::{Event, EventEnvelope, EventSource, ignore_tracker::IgnoreTracker, subscriber::Subscriber},
+    event::{
+        Event, EventEnvelope, EventSource, ignore_tracker::IgnoreTracker, subscriber::Subscriber,
+    },
+    fs_cache::FsCache,
     server::FileSyncConfig,
 };
 
@@ -25,6 +32,8 @@ pub struct FileReceiverSubscriber {
     config: Arc<FileSyncConfig>,
     /// Event debouncer tracker
     ignore_tracker: Arc<IgnoreTracker>,
+    /// Shared FS cache reference
+    fs_cache: Arc<FsCache>,
 }
 
 impl Subscriber for FileReceiverSubscriber {
@@ -49,12 +58,14 @@ impl FileReceiverSubscriber {
         data_socket: Arc<UdpSocket>,
         config: Arc<FileSyncConfig>,
         ignore_tracker: Arc<IgnoreTracker>,
+        fs_cache: Arc<FsCache>,
     ) -> Self {
         Self {
             control_socket,
             data_socket,
             config,
             ignore_tracker,
+            fs_cache,
         }
     }
 
@@ -104,9 +115,10 @@ impl FileReceiverSubscriber {
         }
 
         f_writer.flush()?;
+        let hash = hex::encode(hasher.finalize());
         match expected_hash {
             Some(h) => {
-                if h != hex::encode(hasher.finalize()) {
+                if h != hash {
                     bail!("Corrupted file");
                 }
             }
@@ -114,12 +126,20 @@ impl FileReceiverSubscriber {
         }
 
         let target_path = self.config.sync_dir.join(path);
-        debug!("Moving tmp file to sync dir: {} -> {}", tmp_path.display(), target_path.display());
+        debug!(
+            "Moving tmp file to sync dir: {} -> {}",
+            tmp_path.display(),
+            target_path.display()
+        );
         if let Some(p) = target_path.parent() {
             fs::create_dir_all(p)?;
         }
         self.ignore_tracker.mark(path.clone());
         fs::rename(tmp_path, target_path)?;
+
+        if let Err(e) = self.fs_cache.update_hash(path, &hash) {
+            warn!("Error updating file hash ({} = '{hash}'): {e}", path.display())
+        }
 
         Ok(())
     }
