@@ -17,8 +17,10 @@ use notify::{
 use notify_debouncer_full::{DebouncedEvent, RecommendedCache, new_debouncer_opt};
 
 use crate::{
-    event::{Event, EventEnvelope, EventSource, ignore_tracker::IgnoreTracker, publisher::Publisher},
-    server::FileSyncConfig,
+    event::{
+        Event, EventEnvelope, EventSource, ignore_tracker::IgnoreTracker, publisher::Publisher,
+    },
+    server::FileSyncConfigRef,
 };
 
 /// File-system event watcher
@@ -26,7 +28,7 @@ pub struct FileWatcherPublisher {
     /// Broker sender channel
     sender: Sender<EventEnvelope>,
     /// Server settings shared reference
-    config: Arc<FileSyncConfig>,
+    config: FileSyncConfigRef,
     /// Event debouncer tracker
     ignore_tracker: Arc<IgnoreTracker>,
 }
@@ -38,7 +40,9 @@ impl Publisher for FileWatcherPublisher {
 
     fn run(&self) -> anyhow::Result<()> {
         debug!("FileWatcherPublisher started");
-        println!("Watching {}", self.config.sync_dir.display());
+
+        let sync_dir = self.config.read().unwrap().sync_dir.clone();
+        println!("Watching {}", sync_dir.display());
 
         let (tx, rx) = channel();
         let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, RecommendedCache>(
@@ -50,8 +54,7 @@ impl Publisher for FileWatcherPublisher {
                 .with_compare_contents(true)
                 .with_follow_symlinks(false),
         )?;
-        debouncer.watch(&self.config.sync_dir, RecursiveMode::Recursive)?;
-
+        debouncer.watch(&sync_dir, RecursiveMode::Recursive)?;
         for r in rx {
             match r {
                 Ok(e) => {
@@ -71,7 +74,7 @@ impl FileWatcherPublisher {
     /// Creates new file watcher
     pub fn new(
         sender: Sender<EventEnvelope>,
-        config: Arc<FileSyncConfig>,
+        config: FileSyncConfigRef,
         ignore_tracker: Arc<IgnoreTracker>,
     ) -> Self {
         Self {
@@ -125,7 +128,7 @@ impl FileWatcherPublisher {
                 let from = &fs_event.paths[0];
                 let to = &fs_event.paths[1];
 
-                if from.starts_with(&self.config.tmp_dir) {
+                if from.starts_with(&self.config.read().unwrap().tmp_dir) {
                     vec![Event::FileCreated {
                         path: self.strip_sync_dir(to),
                     }]
@@ -183,7 +186,7 @@ impl FileWatcherPublisher {
 
     /// Strip sync dir from file path
     fn strip_sync_dir(&self, path: &PathBuf) -> PathBuf {
-        path.strip_prefix(&self.config.sync_dir)
+        path.strip_prefix(&self.config.read().unwrap().sync_dir)
             .map(|p| p.to_path_buf())
             .unwrap_or(path.into())
     }

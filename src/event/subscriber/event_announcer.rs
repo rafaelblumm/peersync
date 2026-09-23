@@ -9,7 +9,7 @@ use log::debug;
 use crate::{
     conn::request::{Request, RequestData},
     event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
-    server::FileSyncConfig,
+    server::FileSyncConfigRef,
 };
 
 /// Announces events to peers
@@ -17,7 +17,7 @@ pub struct EventAnnouncerSubscriber {
     /// Control socket
     control_socket: Arc<UdpSocket>,
     /// Server settings shared reference
-    config: Arc<FileSyncConfig>,
+    config: FileSyncConfigRef,
 }
 
 impl Subscriber for EventAnnouncerSubscriber {
@@ -25,7 +25,10 @@ impl Subscriber for EventAnnouncerSubscriber {
         matches!(ee.source, EventSource::Local)
             && matches!(
                 ee.event,
-                Event::FileCreated { .. } | Event::FileDeleted { .. } | Event::FileMoved { .. }
+                Event::FileCreated { .. }
+                    | Event::FileDeleted { .. }
+                    | Event::FileMoved { .. }
+                    | Event::PeerAdded { .. }
             )
     }
 
@@ -40,6 +43,7 @@ impl Subscriber for EventAnnouncerSubscriber {
                     from: from.into(),
                     to: to.into(),
                 },
+                Event::PeerAdded { addr } => RequestData::NewPeer { addr: *addr },
                 _ => bail!("Operation not supported"),
             },
         };
@@ -51,6 +55,8 @@ impl Subscriber for EventAnnouncerSubscriber {
         );
 
         self.config
+            .read()
+            .unwrap()
             .peers
             .iter()
             .map(|ip| {
@@ -67,7 +73,7 @@ impl Subscriber for EventAnnouncerSubscriber {
 }
 
 impl EventAnnouncerSubscriber {
-    pub fn new(control_socket: Arc<UdpSocket>, config: Arc<FileSyncConfig>) -> Self {
+    pub fn new(control_socket: Arc<UdpSocket>, config: FileSyncConfigRef) -> Self {
         Self {
             control_socket,
             config,

@@ -14,7 +14,7 @@ use crate::{
     conn::request::{Request, RequestData},
     event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
     fs_cache::FsCache,
-    server::{DATA_SOCKET_PORT, FileSyncConfig},
+    server::{DATA_SOCKET_PORT, FileSyncConfigRef},
 };
 
 /// File content sender
@@ -22,7 +22,7 @@ pub struct FileSenderSubscriber {
     /// Data transfer socket
     data_socket: Arc<UdpSocket>,
     /// Server settings shared reference
-    config: Arc<FileSyncConfig>,
+    config: FileSyncConfigRef,
     /// Shared FS cache reference
     fs_cache: Arc<FsCache>,
 }
@@ -46,7 +46,7 @@ impl Subscriber for FileSenderSubscriber {
 impl FileSenderSubscriber {
     pub fn new(
         data_socket: Arc<UdpSocket>,
-        config: Arc<FileSyncConfig>,
+        config: FileSyncConfigRef,
         fs_cache: Arc<FsCache>,
     ) -> Self {
         Self {
@@ -60,7 +60,7 @@ impl FileSenderSubscriber {
     fn send_file(&self, addr: &SocketAddr, path: &PathBuf) -> Result<()> {
         // `addr` is the source of the control-socket request; replies must go to the peer's data socket instead
         let addr = SocketAddr::new(addr.ip(), DATA_SOCKET_PORT);
-        let file = File::open(self.config.sync_dir.join(path))?;
+        let file = File::open(self.config.read().unwrap().sync_dir.join(path))?;
         let mut reader = BufReader::with_capacity(1000, file);
         let mut part = 0;
         let mut hasher = Sha256::new();
@@ -97,9 +97,7 @@ impl FileSenderSubscriber {
             warn!("Error updating file hash ({} = '{hash}'): {e}", path.display())
         }
         let request = Request {
-            data: RequestData::EndOfFile {
-                sha256: hash,
-            },
+            data: RequestData::EndOfFile { sha256: hash },
         };
         let req_bytes: Box<[u8]> = request.into();
         self.data_socket.send_to(&req_bytes, addr)?;

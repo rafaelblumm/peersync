@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{net::IpAddr, path::PathBuf, str::FromStr};
 
 use anyhow::bail;
 use log::debug;
@@ -32,6 +32,11 @@ impl TryFrom<&Vec<u8>> for Request {
 /// Request data content
 #[derive(Debug, PartialEq)]
 pub enum RequestData {
+    /// Add new peer
+    NewPeer {
+        /// Peer address
+        addr: IpAddr,
+    },
     /// File bytes chunk
     FileContent {
         /// File path
@@ -73,6 +78,7 @@ pub enum RequestData {
 impl Into<RequestVerb> for &RequestData {
     fn into(self) -> RequestVerb {
         match self {
+            RequestData::NewPeer { .. } => RequestVerb::ADDP,
             RequestData::FileContent { .. } => RequestVerb::CAT,
             RequestData::EndOfFile { .. } => RequestVerb::EOF,
             RequestData::GetFileContent { .. } => RequestVerb::GET,
@@ -86,6 +92,7 @@ impl Into<RequestVerb> for &RequestData {
 impl Into<Vec<u8>> for RequestData {
     fn into(self) -> Vec<u8> {
         match self {
+            RequestData::NewPeer { addr } => addr.to_string().as_bytes().into(),
             RequestData::FileContent {
                 path,
                 part,
@@ -131,6 +138,12 @@ impl TryFrom<&Vec<u8>> for RequestData {
         let verb: RequestVerb = verb_bytes_vec.try_into()?;
 
         match verb {
+            RequestVerb::ADDP => {
+                let addr_raw = String::from_utf8(request_data.to_vec())?;
+                let addr = IpAddr::from_str(&addr_raw)?;
+
+                Ok(Self::NewPeer { addr })
+            },
             RequestVerb::CAT => {
                 let params: Vec<&[u8]> = request_data.splitn(3, |b| *b == b' ').collect();
                 if params.len() != 3 {
@@ -200,6 +213,8 @@ impl TryFrom<&Vec<u8>> for RequestData {
 /// Request verb
 #[derive(Debug, PartialEq)]
 enum RequestVerb {
+    /// Add new peer
+    ADDP,
     /// Get file content
     CAT,
     /// End of file stream
@@ -217,6 +232,7 @@ enum RequestVerb {
 impl Into<Vec<u8>> for RequestVerb {
     fn into(self) -> Vec<u8> {
         match self {
+            RequestVerb::ADDP => b"ADDP",
             RequestVerb::CAT => b"CAT ",
             RequestVerb::EOF => b"EOF ",
             RequestVerb::GET => b"GET ",
@@ -233,6 +249,7 @@ impl TryFrom<Vec<u8>> for RequestVerb {
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
         match value {
+            val if val == b"ADDP" => Ok(RequestVerb::ADDP),
             val if val == b"CAT " => Ok(RequestVerb::CAT),
             val if val == b"EOF " => Ok(RequestVerb::EOF),
             val if val == b"GET " => Ok(RequestVerb::GET),
@@ -246,12 +263,15 @@ impl TryFrom<Vec<u8>> for RequestVerb {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::net::Ipv4Addr;
+
+use super::*;
 
     /// Test verb conversion into bytes
     #[test]
     fn test_verb_into_bytes() {
         [
+            (b"ADDP", RequestVerb::ADDP),
             (b"CAT ", RequestVerb::CAT),
             (b"EOF ", RequestVerb::EOF),
             (b"GET ", RequestVerb::GET),
@@ -270,6 +290,7 @@ mod tests {
     #[test]
     fn test_verb_from_bytes_ok() {
         [
+            (RequestVerb::ADDP, b"ADDP"),
             (RequestVerb::CAT, b"CAT "),
             (RequestVerb::EOF, b"EOF "),
             (RequestVerb::GET, b"GET "),
@@ -318,6 +339,16 @@ mod tests {
         assert_eq!(b"sha256hash".to_vec(), data);
     }
 
+    /// Test add peer request data into bytes
+    #[test]
+    fn test_data_into_bytes_new_peer() {
+        let data: Vec<u8> = RequestData::NewPeer {
+            addr: IpAddr::V4(Ipv4Addr::LOCALHOST)
+        }.into();
+
+        assert_eq!(b"127.0.0.1".to_vec(), data);
+    }
+
     /// Test get content request data into bytes
     #[test]
     fn test_data_into_bytes_get_content() {
@@ -362,8 +393,21 @@ mod tests {
         assert_eq!(b"test.txt".to_vec(), data);
     }
 
+    /// Test parse request data from bytes
+    #[test]
+    fn test_data_from_bytes_new_peer() {
+        let expected = RequestData::NewPeer {
+            addr: IpAddr::V4(Ipv4Addr::LOCALHOST)
+        };
+        let result = RequestData::try_from(
+            b"ADDP127.0.0.1".to_vec()
+        )
+        .unwrap();
 
-    /// Test parse request data from bytes/// Test parse request data from bytes
+        assert_eq!(expected, result);
+    }
+
+    /// Test parse request data from bytes
     #[test]
     fn test_data_from_bytes_file_content() {
         let expected = RequestData::FileContent {
