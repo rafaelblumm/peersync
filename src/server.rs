@@ -81,13 +81,13 @@ pub struct FileSyncConfig {
     pub cache_file: PathBuf,
 }
 
-impl Into<FileSyncConfigDataAux> for &FileSyncConfig {
-    fn into(self) -> FileSyncConfigDataAux {
+impl From<&FileSyncConfig> for FileSyncConfigDataAux {
+    fn from(val: &FileSyncConfig) -> Self {
         FileSyncConfigDataAux {
-            sync_dir: self.sync_dir.clone(),
-            tmp_dir: self.tmp_dir.clone(),
-            peers: self.peers.clone(),
-            cache_file: self.cache_file.clone(),
+            sync_dir: val.sync_dir.clone(),
+            tmp_dir: val.tmp_dir.clone(),
+            peers: val.peers.clone(),
+            cache_file: val.cache_file.clone(),
         }
     }
 }
@@ -135,14 +135,13 @@ impl FileSyncServer {
 
         self.get_publishers(sender, control_socket.clone(), ignore_tracker.clone())
             .into_iter()
-            .map(|(thread_name, publisher)| {
+            .try_for_each(|(thread_name, publisher)| {
                 thread::Builder::new()
                     .name(thread_name)
                     .spawn(move || publisher.run())
                     .map(|_| ())
                     .map_err(anyhow::Error::msg)
-            })
-            .collect::<Result<()>>()?;
+            })?;
 
         let router = Router::new(
             control_socket.clone(),
@@ -163,12 +162,6 @@ impl FileSyncServer {
         ignore_tracker: Arc<IgnoreTracker>,
     ) -> Vec<(String, Box<dyn Publisher + Send>)> {
         vec![
-            (
-                "TestPublisherThread".into(),
-                Box::new(crate::event::publisher::TestPublisher {
-                    sender: sender.clone(),
-                }),
-            ),
             (
                 "ControlListenerPublisherThread".into(),
                 Box::new(ControlListenerPublisher::new(

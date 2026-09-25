@@ -46,7 +46,7 @@ impl ConfigUpdaterSubscriber {
             .try_write()
             .map_err(|e| anyhow!(e.to_string()))?;
 
-        config_lock.peers.push(addr.clone());
+        config_lock.peers.push(*addr);
         let content = config_lock.serialize()?;
 
         let config_path = &config_lock.config_file;

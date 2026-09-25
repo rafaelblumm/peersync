@@ -141,7 +141,7 @@ impl FsCache {
     /// Removes file from cache
     pub fn remove_cache(&self, p: &PathBuf) -> Result<()> {
         let mut map = self.write_lock()?;
-        if let Some(_) = map.remove(p) {
+        if map.remove(p).is_some() {
             drop(map);
             self.flush_cache()?;
         }
