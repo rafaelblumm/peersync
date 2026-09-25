@@ -9,11 +9,11 @@ pub struct Request {
     pub data: RequestData,
 }
 
-impl Into<Box<[u8]>> for Request {
-    fn into(self) -> Box<[u8]> {
-        let verb: RequestVerb = (&self.data).into();
+impl From<Request> for Box<[u8]> {
+    fn from(val: Request) -> Self {
+        let verb: RequestVerb = (&val.data).into();
         let mut bytes: Vec<u8> = verb.into();
-        bytes.append(&mut self.data.into());
+        bytes.append(&mut val.data.into());
 
         bytes.into_boxed_slice()
     }
@@ -75,9 +75,9 @@ pub enum RequestData {
     },
 }
 
-impl Into<RequestVerb> for &RequestData {
-    fn into(self) -> RequestVerb {
-        match self {
+impl From<&RequestData> for RequestVerb {
+    fn from(val: &RequestData) -> Self {
+        match val {
             RequestData::NewPeer { .. } => RequestVerb::ADDP,
             RequestData::FileContent { .. } => RequestVerb::CAT,
             RequestData::EndOfFile { .. } => RequestVerb::EOF,
@@ -89,9 +89,9 @@ impl Into<RequestVerb> for &RequestData {
     }
 }
 
-impl Into<Vec<u8>> for RequestData {
-    fn into(self) -> Vec<u8> {
-        match self {
+impl From<RequestData> for Vec<u8> {
+    fn from(val: RequestData) -> Self {
+        match val {
             RequestData::NewPeer { addr } => addr.to_string().as_bytes().into(),
             RequestData::FileContent {
                 path,
@@ -229,9 +229,9 @@ enum RequestVerb {
     RM,
 }
 
-impl Into<Vec<u8>> for RequestVerb {
-    fn into(self) -> Vec<u8> {
-        match self {
+impl From<RequestVerb> for Vec<u8> {
+    fn from(val: RequestVerb) -> Self {
+        match val {
             RequestVerb::ADDP => b"ADDP",
             RequestVerb::CAT => b"CAT ",
             RequestVerb::EOF => b"EOF ",

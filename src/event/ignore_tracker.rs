@@ -15,6 +15,12 @@ pub struct IgnoreTracker {
     entries: Mutex<HashMap<PathBuf, Instant>>,
 }
 
+impl Default for IgnoreTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IgnoreTracker {
     pub fn new() -> Self {
         Self {

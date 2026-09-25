@@ -91,13 +91,12 @@ impl FileWatcherPublisher {
             .filter_map(|e| self.fs_into_event(e))
             .flatten()
             .filter(|e| !self.should_ignore(e))
-            .map(|e| {
+            .try_for_each(|e| {
                 self.publish(EventEnvelope {
                     source: EventSource::Local,
                     event: e,
                 })
             })
-            .collect()
     }
 
     /// Debounce file events originated by peer request
@@ -140,7 +139,7 @@ impl FileWatcherPublisher {
                 }
             }
             EventKind::Modify(ModifyKind::Name(RenameMode::From)) => {
-                self.map_event_paths(&fs_event.paths, |p| Event::FileDeleted { path: p.into() })
+                self.map_event_paths(&fs_event.paths, |p| Event::FileDeleted { path: p })
             }
             EventKind::Modify(kind)
                 if matches!(
@@ -150,7 +149,7 @@ impl FileWatcherPublisher {
                         | ModifyKind::Other
                 ) =>
             {
-                self.map_event_paths(&fs_event.paths, |p| Event::FileCreated { path: p.into() })
+                self.map_event_paths(&fs_event.paths, |p| Event::FileCreated { path: p })
             }
             EventKind::Create(kind) if kind == CreateKind::File => {
                 let paths = fs_event
@@ -158,10 +157,10 @@ impl FileWatcherPublisher {
                     .iter()
                     .filter_map(|p| if p.is_file() { Some(p.clone()) } else { None })
                     .collect();
-                self.map_event_paths(&paths, |p| Event::FileCreated { path: p.into() })
+                self.map_event_paths(&paths, |p| Event::FileCreated { path: p })
             }
             EventKind::Remove(kind) if kind == RemoveKind::File => {
-                self.map_event_paths(&fs_event.paths, |p| Event::FileDeleted { path: p.into() })
+                self.map_event_paths(&fs_event.paths, |p| Event::FileDeleted { path: p })
             }
             _ => vec![],
         };
@@ -179,7 +178,7 @@ impl FileWatcherPublisher {
         F: Fn(PathBuf) -> Event,
     {
         paths
-            .into_iter()
+            .iter()
             .map(|p| f(self.strip_sync_dir(p)))
             .collect()
     }

@@ -59,8 +59,8 @@ impl Subscriber for EventAnnouncerSubscriber {
             .unwrap()
             .peers
             .iter()
-            .map(|ip| {
-                let addr = SocketAddr::new(ip.clone(), 5000);
+            .try_for_each(|ip| {
+                let addr = SocketAddr::new(*ip, 5000);
                 debug!("Sending to address {addr}");
 
                 self.control_socket
@@ -68,7 +68,6 @@ impl Subscriber for EventAnnouncerSubscriber {
                     .map(|_| ())
                     .map_err(anyhow::Error::msg)
             })
-            .collect()
     }
 }
 
