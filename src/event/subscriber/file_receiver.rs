@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use log::{debug, warn};
 use sha2::{Digest, Sha256};
 
@@ -15,11 +15,9 @@ use crate::{
         Request,
         RequestData::{self, GetFileContent},
     },
-    event::{
-        Event, EventEnvelope, EventSource, ignore_tracker::IgnoreTracker, subscriber::Subscriber,
-    },
-    fs_cache::FsCache,
-    server::FileSyncConfigRef,
+    event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
+    server::{FileSyncConfigRef, UdpSocketMutex},
+    service::{fs_cache::FsCacheRef, ignore_tracker::IgnoreTracker},
 };
 
 /// File content receiver
@@ -27,13 +25,13 @@ pub struct FileReceiverSubscriber {
     /// Control socket
     control_socket: Arc<UdpSocket>,
     /// Data transfer socket
-    data_socket: Arc<UdpSocket>,
+    data_socket: UdpSocketMutex,
     /// Server settings shared reference
     config: FileSyncConfigRef,
     /// Event debouncer tracker
     ignore_tracker: Arc<IgnoreTracker>,
     /// Shared FS cache reference
-    fs_cache: Arc<FsCache>,
+    fs_cache: FsCacheRef,
 }
 
 impl Subscriber for FileReceiverSubscriber {
@@ -55,10 +53,10 @@ impl Subscriber for FileReceiverSubscriber {
 impl FileReceiverSubscriber {
     pub fn new(
         control_socket: Arc<UdpSocket>,
-        data_socket: Arc<UdpSocket>,
+        data_socket: UdpSocketMutex,
         config: FileSyncConfigRef,
         ignore_tracker: Arc<IgnoreTracker>,
-        fs_cache: Arc<FsCache>,
+        fs_cache: FsCacheRef,
     ) -> Self {
         Self {
             control_socket,
@@ -82,6 +80,11 @@ impl FileReceiverSubscriber {
         );
         self.control_socket.send_to(&req_bytes, addr)?;
 
+        let socket = self
+            .data_socket
+            .lock()
+            .map_err(|e| anyhow!("Error acquiring data socket lock: {e}"))?;
+
         let tmp_path = self.config.read().unwrap().tmp_dir.join(path);
         if let Some(p) = tmp_path.parent() {
             fs::create_dir_all(p)?;
@@ -96,7 +99,7 @@ impl FileReceiverSubscriber {
         let mut hasher = Sha256::new();
         let expected_hash;
         loop {
-            let (received, _) = self.data_socket.recv_from(&mut sock_buf)?;
+            let (received, _) = socket.recv_from(&mut sock_buf)?;
             let chunk = sock_buf[..received].to_vec();
             let req = Request::try_from(&chunk)?;
             debug!("Received bytes: {:?}", String::from_utf8(chunk));
@@ -138,7 +141,10 @@ impl FileReceiverSubscriber {
         fs::rename(tmp_path, target_path)?;
 
         if let Err(e) = self.fs_cache.update_hash(path, &hash) {
-            warn!("Error updating file hash ({} = '{hash}'): {e}", path.display())
+            warn!(
+                "Error updating file hash ({} = '{hash}'): {e}",
+                path.display()
+            )
         }
 
         Ok(())

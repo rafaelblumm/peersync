@@ -51,8 +51,19 @@ pub enum RequestData {
         /// Content checksum
         sha256: String,
     },
+    /// File tree end
+    EndOfTree,
     /// Request file content by path
     GetFileContent {
+        /// File path
+        path: PathBuf,
+    },
+    /// List all files
+    GetFileTree,
+    /// Send file path and content hash
+    ListFiles {
+        /// File content hash
+        sha256: String,
         /// File path
         path: PathBuf,
     },
@@ -81,7 +92,10 @@ impl From<&RequestData> for RequestVerb {
             RequestData::NewPeer { .. } => RequestVerb::ADDP,
             RequestData::FileContent { .. } => RequestVerb::CAT,
             RequestData::EndOfFile { .. } => RequestVerb::EOF,
+            RequestData::EndOfTree => RequestVerb::LSE,
             RequestData::GetFileContent { .. } => RequestVerb::GET,
+            RequestData::GetFileTree => RequestVerb::TREE,
+            RequestData::ListFiles { .. } => RequestVerb::LS,
             RequestData::MovedFile { .. } => RequestVerb::MV,
             RequestData::NewFile { .. } => RequestVerb::NEW,
             RequestData::RemoveFile { .. } => RequestVerb::RM,
@@ -111,6 +125,10 @@ impl From<RequestData> for Vec<u8> {
             RequestData::MovedFile { from, to } => format!("{} {}", from.display(), to.display())
                 .as_bytes()
                 .into(),
+            RequestData::ListFiles { sha256, path } => {
+                format!("{sha256} {}", path.display()).as_bytes().into()
+            }
+            RequestData::EndOfTree | RequestData::GetFileTree => vec![],
         }
     }
 }
@@ -143,23 +161,23 @@ impl TryFrom<&Vec<u8>> for RequestData {
                 let addr = IpAddr::from_str(&addr_raw)?;
 
                 Ok(Self::NewPeer { addr })
-            },
+            }
             RequestVerb::CAT => {
                 let params: Vec<&[u8]> = request_data.splitn(3, |b| *b == b' ').collect();
                 if params.len() != 3 {
                     bail!("Invalid param size: {}", params.len())
                 }
 
-                let path_bytes = params.first().unwrap().to_vec();
+                let path_bytes = params[0].to_vec();
                 let path = String::from_utf8(path_bytes)?.into();
 
-                let part_bytes = params.get(1).unwrap().to_vec();
+                let part_bytes = params[1].to_vec();
                 let part = String::from_utf8(part_bytes)?.parse()?;
 
                 Ok(RequestData::FileContent {
                     path,
                     part,
-                    content: params.get(2).unwrap().to_vec(),
+                    content: params[2].to_vec(),
                 })
             }
             RequestVerb::EOF => Ok(RequestData::EndOfFile {
@@ -168,14 +186,32 @@ impl TryFrom<&Vec<u8>> for RequestData {
             RequestVerb::GET => Ok(RequestData::GetFileContent {
                 path: String::from_utf8(request_data.to_vec())?.into(),
             }),
+            RequestVerb::LS => {
+                let params: Vec<&[u8]> = request_data.splitn(2, |b| *b == b' ').collect();
+                if params.len() != 2 {
+                    bail!("Invalid param size: {}", params.len())
+                }
+
+                let hash = String::from_utf8(params[0].to_vec())?;
+                if hash.is_empty() {
+                    bail!("Empty hash value")
+                }
+                let path_str = String::from_utf8(params[1].to_vec())?;
+
+                Ok(RequestData::ListFiles {
+                    sha256: hash,
+                    path: PathBuf::from(path_str),
+                })
+            }
+            RequestVerb::LSE => Ok(RequestData::EndOfTree),
             RequestVerb::MV => {
                 let params: Vec<&[u8]> = request_data.splitn(2, |b| *b == b' ').collect();
                 if params.len() != 2 {
                     bail!("Invalid param size: {}", params.len())
                 }
 
-                let from_str = String::from_utf8(params.first().unwrap().to_vec())?;
-                let to_str = String::from_utf8(params.get(1).unwrap().to_vec())?;
+                let from_str = String::from_utf8(params[0].to_vec())?;
+                let to_str = String::from_utf8(params[1].to_vec())?;
 
                 if from_str.is_empty() || to_str.is_empty() {
                     bail!("Empty file path")
@@ -206,6 +242,7 @@ impl TryFrom<&Vec<u8>> for RequestData {
                     path: path_str.into(),
                 })
             }
+            RequestVerb::TREE => Ok(RequestData::GetFileTree),
         }
     }
 }
@@ -221,12 +258,18 @@ enum RequestVerb {
     EOF,
     /// Request file content
     GET,
+    /// List file content
+    LS,
+    /// List file content end
+    LSE,
     /// File moved
     MV,
     /// New file created
     NEW,
     /// File removed
     RM,
+    /// List all files
+    TREE,
 }
 
 impl From<RequestVerb> for Vec<u8> {
@@ -236,9 +279,12 @@ impl From<RequestVerb> for Vec<u8> {
             RequestVerb::CAT => b"CAT ",
             RequestVerb::EOF => b"EOF ",
             RequestVerb::GET => b"GET ",
+            RequestVerb::LS => b"LS  ",
+            RequestVerb::LSE => b"LSE ",
             RequestVerb::MV => b"MV  ",
             RequestVerb::NEW => b"NEW ",
             RequestVerb::RM => b"RM  ",
+            RequestVerb::TREE => b"TREE",
         }
         .into()
     }
@@ -253,9 +299,12 @@ impl TryFrom<Vec<u8>> for RequestVerb {
             val if val == b"CAT " => Ok(RequestVerb::CAT),
             val if val == b"EOF " => Ok(RequestVerb::EOF),
             val if val == b"GET " => Ok(RequestVerb::GET),
+            val if val == b"LS  " => Ok(RequestVerb::LS),
+            val if val == b"LSE " => Ok(RequestVerb::LSE),
             val if val == b"MV  " => Ok(RequestVerb::MV),
             val if val == b"NEW " => Ok(RequestVerb::NEW),
             val if val == b"RM  " => Ok(RequestVerb::RM),
+            val if val == b"TREE" => Ok(RequestVerb::TREE),
             _ => bail!("Invalid verb: {value:?}"),
         }
     }
@@ -265,7 +314,7 @@ impl TryFrom<Vec<u8>> for RequestVerb {
 mod tests {
     use std::net::Ipv4Addr;
 
-use super::*;
+    use super::*;
 
     /// Test verb conversion into bytes
     #[test]
@@ -280,10 +329,7 @@ use super::*;
             (b"RM  ", RequestVerb::RM),
         ]
         .into_iter()
-        .for_each(|(expected, verb)| assert_eq!(
-            Into::<Vec<u8>>::into(verb),
-            expected.to_vec()
-        ));
+        .for_each(|(expected, verb)| assert_eq!(Into::<Vec<u8>>::into(verb), expected.to_vec()));
     }
 
     /// Test successful verb parse from bytes
@@ -300,10 +346,7 @@ use super::*;
         ]
         .into_iter()
         .for_each(|(expected, verb)| {
-            assert_eq!(
-                expected,
-                RequestVerb::try_from(verb.to_vec()).unwrap()
-            )
+            assert_eq!(expected, RequestVerb::try_from(verb.to_vec()).unwrap())
         });
     }
 
@@ -312,9 +355,7 @@ use super::*;
     fn test_verb_from_invalid_bytes() {
         ["RM ", "RM    ", "", "UNKNOWN"]
             .into_iter()
-            .for_each(|verb|
-                assert!(RequestVerb::try_from(verb.as_bytes().to_vec()).is_err())
-            );
+            .for_each(|verb| assert!(RequestVerb::try_from(verb.as_bytes().to_vec()).is_err()));
     }
 
     /// Test file content request data into bytes
@@ -323,8 +364,9 @@ use super::*;
         let data: Vec<u8> = RequestData::FileContent {
             path: PathBuf::from("test.txt"),
             part: 1,
-            content: b"file content\n".to_vec()
-        }.into();
+            content: b"file content\n".to_vec(),
+        }
+        .into();
 
         assert_eq!(b"test.txt 000001 file content\n".to_vec(), data);
     }
@@ -333,8 +375,9 @@ use super::*;
     #[test]
     fn test_data_into_bytes_eof() {
         let data: Vec<u8> = RequestData::EndOfFile {
-            sha256: "sha256hash".into()
-        }.into();
+            sha256: "sha256hash".into(),
+        }
+        .into();
 
         assert_eq!(b"sha256hash".to_vec(), data);
     }
@@ -343,8 +386,9 @@ use super::*;
     #[test]
     fn test_data_into_bytes_new_peer() {
         let data: Vec<u8> = RequestData::NewPeer {
-            addr: IpAddr::V4(Ipv4Addr::LOCALHOST)
-        }.into();
+            addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        }
+        .into();
 
         assert_eq!(b"127.0.0.1".to_vec(), data);
     }
@@ -353,8 +397,9 @@ use super::*;
     #[test]
     fn test_data_into_bytes_get_content() {
         let data: Vec<u8> = RequestData::GetFileContent {
-            path: PathBuf::from("test.txt")
-        }.into();
+            path: PathBuf::from("test.txt"),
+        }
+        .into();
 
         assert_eq!(b"test.txt".to_vec(), data);
     }
@@ -364,14 +409,16 @@ use super::*;
     fn test_data_into_bytes_moved_file() {
         let data: Vec<u8> = RequestData::MovedFile {
             from: PathBuf::from("old.txt"),
-            to: PathBuf::from("new.txt")
-        }.into();
+            to: PathBuf::from("new.txt"),
+        }
+        .into();
         assert_eq!(b"old.txt new.txt".to_vec(), data);
 
         let data: Vec<u8> = RequestData::MovedFile {
             from: PathBuf::from("old.txt"),
-            to: PathBuf::from("subdir/new.txt")
-        }.into();
+            to: PathBuf::from("subdir/new.txt"),
+        }
+        .into();
         assert_eq!(b"old.txt subdir/new.txt".to_vec(), data);
     }
 
@@ -380,7 +427,8 @@ use super::*;
     fn test_data_into_bytes_new_file() {
         let data: Vec<u8> = RequestData::NewFile {
             path: PathBuf::from("test.txt"),
-        }.into();
+        }
+        .into();
         assert_eq!(b"test.txt".to_vec(), data);
     }
 
@@ -389,7 +437,8 @@ use super::*;
     fn test_data_into_bytes_remove_file() {
         let data: Vec<u8> = RequestData::RemoveFile {
             path: PathBuf::from("test.txt"),
-        }.into();
+        }
+        .into();
         assert_eq!(b"test.txt".to_vec(), data);
     }
 
@@ -397,12 +446,9 @@ use super::*;
     #[test]
     fn test_data_from_bytes_new_peer() {
         let expected = RequestData::NewPeer {
-            addr: IpAddr::V4(Ipv4Addr::LOCALHOST)
+            addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
         };
-        let result = RequestData::try_from(
-            b"ADDP127.0.0.1".to_vec()
-        )
-        .unwrap();
+        let result = RequestData::try_from(b"ADDP127.0.0.1".to_vec()).unwrap();
 
         assert_eq!(expected, result);
     }
@@ -413,12 +459,9 @@ use super::*;
         let expected = RequestData::FileContent {
             path: PathBuf::from("test.txt"),
             part: 1,
-            content: b"file content\n".to_vec()
+            content: b"file content\n".to_vec(),
         };
-        let result = RequestData::try_from(
-            b"CAT test.txt 000001 file content\n".to_vec()
-        )
-        .unwrap();
+        let result = RequestData::try_from(b"CAT test.txt 000001 file content\n".to_vec()).unwrap();
 
         assert_eq!(expected, result);
     }
@@ -427,12 +470,9 @@ use super::*;
     #[test]
     fn test_data_from_bytes_eof() {
         let expected = RequestData::EndOfFile {
-            sha256: "sha256hash".into()
+            sha256: "sha256hash".into(),
         };
-        let result = RequestData::try_from(
-            b"EOF sha256hash".to_vec()
-        )
-        .unwrap();
+        let result = RequestData::try_from(b"EOF sha256hash".to_vec()).unwrap();
 
         assert_eq!(expected, result);
     }
@@ -441,12 +481,9 @@ use super::*;
     #[test]
     fn test_data_from_bytes_get_content() {
         let expected = RequestData::GetFileContent {
-            path: PathBuf::from("test.txt")
+            path: PathBuf::from("test.txt"),
         };
-        let result = RequestData::try_from(
-            b"GET test.txt".to_vec()
-        )
-        .unwrap();
+        let result = RequestData::try_from(b"GET test.txt".to_vec()).unwrap();
 
         assert_eq!(expected, result);
     }
@@ -456,12 +493,9 @@ use super::*;
     fn test_data_from_bytes_moved_file() {
         let expected = RequestData::MovedFile {
             from: PathBuf::from("old.txt"),
-            to: PathBuf::from("new.txt")
+            to: PathBuf::from("new.txt"),
         };
-        let result = RequestData::try_from(
-            b"MV  old.txt new.txt".to_vec()
-        )
-        .unwrap();
+        let result = RequestData::try_from(b"MV  old.txt new.txt".to_vec()).unwrap();
 
         assert_eq!(expected, result);
     }
@@ -472,10 +506,7 @@ use super::*;
         let expected = RequestData::NewFile {
             path: PathBuf::from("test.txt"),
         };
-        let result = RequestData::try_from(
-            b"NEW test.txt".to_vec()
-        )
-        .unwrap();
+        let result = RequestData::try_from(b"NEW test.txt".to_vec()).unwrap();
 
         assert_eq!(expected, result);
     }
@@ -486,10 +517,7 @@ use super::*;
         let expected = RequestData::RemoveFile {
             path: PathBuf::from("test.txt"),
         };
-        let result = RequestData::try_from(
-            b"RM  test.txt".to_vec()
-        )
-        .unwrap();
+        let result = RequestData::try_from(b"RM  test.txt".to_vec()).unwrap();
 
         assert_eq!(expected, result);
     }

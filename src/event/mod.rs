@@ -1,7 +1,6 @@
 use std::{fmt::{Display, Formatter}, net::{IpAddr, SocketAddr}, path::PathBuf};
 
 pub mod broker;
-pub mod ignore_tracker;
 pub mod publisher;
 pub mod router;
 pub mod subscriber;
@@ -28,6 +27,8 @@ pub enum EventSource {
     Local,
     /// Peer (should be sent)
     Peer(SocketAddr),
+    /// Any peer (relevant to synchronization conflict resolution)
+    Unknown,
 }
 
 impl Display for EventSource {
@@ -35,6 +36,7 @@ impl Display for EventSource {
         let fmt = match self {
             EventSource::Local => "Local".into(),
             EventSource::Peer(socket_addr) => format!("Peer({socket_addr})"),
+            EventSource::Unknown => "Unknown".into(),
         };
 
         write!(f, "{fmt}")
@@ -76,6 +78,8 @@ pub enum Event {
         /// File path
         path: PathBuf,
     },
+    /// Send complete directory tree path and hash
+    SendFilesList,
 }
 
 impl Display for Event {
@@ -91,6 +95,7 @@ impl Display for Event {
             Event::DownloadFile { path } => format!("DownloadFile({})", path.display()),
             Event::UploadFile { path } => format!("UploadFile({})", path.display()),
             Event::PeerAdded { addr } => format!("PeerAdded({addr})"),
+            Event::SendFilesList => "SendFilesList".to_string(),
         };
 
         write!(f, "{fmt}")

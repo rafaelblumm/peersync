@@ -8,7 +8,7 @@ use log::{debug, error};
 
 use crate::{
     conn::request::{Request, RequestData},
-    event::{Event, EventEnvelope, EventSource, publisher::Publisher}
+    event::{Event, EventEnvelope, EventSource, publisher::Publisher},
 };
 
 /// Control socket listener. Listens to peer communication
@@ -45,10 +45,14 @@ impl Publisher for ControlListenerPublisher {
                     RequestData::GetFileContent { path } => Event::UploadFile { path },
                     RequestData::NewFile { path } => Event::FileCreated { path },
                     RequestData::RemoveFile { path } => Event::FileDeleted { path },
-                    RequestData::EndOfFile { .. } | RequestData::FileContent { .. } => {
+                    RequestData::MovedFile { from, to } => Event::FileMoved { from, to },
+                    RequestData::GetFileTree => Event::SendFilesList,
+                    RequestData::EndOfFile { .. }
+                    | RequestData::FileContent { .. }
+                    | RequestData::EndOfTree
+                    | RequestData::ListFiles { .. } => {
                         bail!("Data request in control socket")
                     }
-                    RequestData::MovedFile { from, to } => Event::FileMoved { from, to },
                 },
             };
 
@@ -62,10 +66,7 @@ impl Publisher for ControlListenerPublisher {
 }
 
 impl ControlListenerPublisher {
-    pub fn new(
-        sender: Sender<EventEnvelope>,
-        control_socket: Arc<UdpSocket>
-    ) -> Self {
+    pub fn new(sender: Sender<EventEnvelope>, control_socket: Arc<UdpSocket>) -> Self {
         Self {
             sender,
             control_socket,

@@ -9,7 +9,7 @@ use log::debug;
 use crate::{
     conn::request::{Request, RequestData},
     event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
-    server::FileSyncConfigRef,
+    server::{CONTROL_SOCKET_PORT, FileSyncConfigRef},
 };
 
 /// Announces events to peers
@@ -54,20 +54,15 @@ impl Subscriber for EventAnnouncerSubscriber {
             String::from_utf8(req_bytes.to_vec())
         );
 
-        self.config
-            .read()
-            .unwrap()
-            .peers
-            .iter()
-            .try_for_each(|ip| {
-                let addr = SocketAddr::new(*ip, 5000);
-                debug!("Sending to address {addr}");
+        self.config.read().unwrap().peers.iter().try_for_each(|ip| {
+            let addr = SocketAddr::new(*ip, CONTROL_SOCKET_PORT);
+            debug!("Sending to address {addr}");
 
-                self.control_socket
-                    .send_to(&req_bytes, addr)
-                    .map(|_| ())
-                    .map_err(anyhow::Error::msg)
-            })
+            self.control_socket
+                .send_to(&req_bytes, addr)
+                .map(|_| ())
+                .map_err(anyhow::Error::msg)
+        })
     }
 }
 

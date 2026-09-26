@@ -2,17 +2,22 @@ use std::{
     collections::HashMap,
     fs,
     path::PathBuf,
-    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
     time::SystemTime,
 };
 
 use anyhow::{Result, anyhow};
-use log::debug;
+use log::{debug, trace};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::server::FileSyncConfigRef;
+use crate::{
+    server::FileSyncConfigRef,
+    utils::{dir_walker, is_valid_entry},
+};
 
+/// Filesystem cache shared reference alias
+pub type FsCacheRef = Arc<FsCache>;
 /// Filesystem cache map type alias
 type FsCacheMap = HashMap<PathBuf, CacheValue>;
 
@@ -42,6 +47,11 @@ impl FsCache {
         })
     }
 
+    /// Checks if file hash matches
+    pub fn hash_matches(&self, p: &PathBuf, hash: &str) -> Result<bool> {
+        self.get_or_load_hash(p).map(|h| hash == &h)
+    }
+
     /// Get hash. If cache does not exist, load file and update cache
     pub fn get_or_load_hash(&self, p: &PathBuf) -> Result<String> {
         debug!("Retrieving file cache: {}", p.display());
@@ -51,6 +61,63 @@ impl FsCache {
         }
 
         self.calculate_and_update_hash(p)
+    }
+
+    /// Scans directory for outdated file hash cache
+    pub fn update_all_if_old(&self) -> Result<()> {
+        let sync_dir = self.config.read().unwrap().sync_dir.clone();
+        let dir_walker = dir_walker(&sync_dir).into_iter();
+        for entry in dir_walker.filter_entry(is_valid_entry) {
+            let p = entry?.into_path();
+            if !p.is_file() {
+                continue;
+            }
+
+            let p = p.strip_prefix(&sync_dir).unwrap();
+            self.update_hash_if_old(&p.to_path_buf())?;
+        }
+
+        let obsolete_keys = self.read_lock()?
+            .keys()
+            .into_iter()
+            .filter_map(|k| {
+                if sync_dir.join(k).exists() {
+                    None
+                } else {
+                    Some(k.clone())
+                }
+            })
+            .collect::<Vec<PathBuf>>();
+        for k in &obsolete_keys {
+            self.remove_cache(k)?;
+        }
+
+        self.flush_cache()
+    }
+
+    /// Updates file hash if modified date is more recent than last cache update
+    fn update_hash_if_old(&self, p: &PathBuf) -> Result<()> {
+        trace!("Checking if {} hash should be updated", p.display());
+
+        let last_modified = self
+            .config
+            .read()
+            .unwrap()
+            .sync_dir
+            .join(p)
+            .metadata()?
+            .modified()?;
+
+        if self
+            .read_lock()?
+            .get(p)
+            .is_some_and(|c| c.last_update > last_modified)
+        {
+            return Ok(());
+        }
+        self.calculate_and_update_hash(p)?;
+
+        Ok(())
     }
 
     /// Calculate file hash and update cache
@@ -69,20 +136,12 @@ impl FsCache {
     pub fn update_hash(&self, p: &PathBuf, hash: &str) -> Result<()> {
         debug!("Updating file cache: {} = '{hash}'", p.display());
 
-        let last_update = self
-            .config
-            .read()
-            .unwrap()
-            .sync_dir
-            .join(p)
-            .metadata()?
-            .modified()?;
         let mut map = self.write_lock()?;
         map.insert(
             p.into(),
             CacheValue {
                 hash: hash.to_string(),
-                last_update,
+                last_update: SystemTime::now(),
             },
         );
 
@@ -107,7 +166,11 @@ impl FsCache {
 
     /// Rename all cache entries from one base diretory to other
     pub fn rename_dir_cache(&self, from: &PathBuf, to: &PathBuf) -> Result<()> {
-        debug!("Renaming cache keys directory: {} -> {}", from.display(), to.display());
+        debug!(
+            "Renaming cache keys directory: {} -> {}",
+            from.display(),
+            to.display()
+        );
 
         let read_lock = self.read_lock()?;
         let keys: Vec<PathBuf> = read_lock
@@ -210,9 +273,12 @@ fn load_cache(config: &FileSyncConfigRef) -> Result<FsCacheMap> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
-    use crate::server::FileSyncConfig;
+    use crate::server::config::FileSyncConfig;
 
     use super::*;
 

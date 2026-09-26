@@ -3,11 +3,9 @@ use std::{fs, path::PathBuf, sync::Arc};
 use anyhow::{Result, bail};
 
 use crate::{
-    event::{
-        Event, EventEnvelope, EventSource, ignore_tracker::IgnoreTracker, subscriber::Subscriber,
-    },
-    fs_cache::FsCache,
+    event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
     server::FileSyncConfigRef,
+    service::{fs_cache::FsCacheRef, ignore_tracker::IgnoreTracker},
 };
 
 /// General filesystem operations subscriber
@@ -17,12 +15,12 @@ pub struct FsWorkerSubscriber {
     /// Event debouncer tracker
     ignore_tracker: Arc<IgnoreTracker>,
     /// Shared FS cache reference
-    fs_cache: Arc<FsCache>,
+    fs_cache: FsCacheRef,
 }
 
 impl Subscriber for FsWorkerSubscriber {
     fn filter(ee: &EventEnvelope) -> bool {
-        matches!(ee.source, EventSource::Peer(..))
+        !matches!(ee.source, EventSource::Local)
             && matches!(
                 ee.event,
                 Event::FileDeleted { .. } | Event::FileMoved { .. }
@@ -42,7 +40,7 @@ impl FsWorkerSubscriber {
     pub fn new(
         config: FileSyncConfigRef,
         ignore_tracker: Arc<IgnoreTracker>,
-        fs_cache: Arc<FsCache>,
+        fs_cache: FsCacheRef,
     ) -> Self {
         Self {
             config,
