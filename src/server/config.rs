@@ -1,4 +1,4 @@
-use std::{fs, net::IpAddr, path::PathBuf};
+use std::{collections::HashSet, fs, net::IpAddr, path::PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ struct FileSyncConfigDataAux {
     #[serde(default = "get_default_tmp_dir")]
     pub tmp_dir: PathBuf,
     /// Peers IP address
-    pub peers: Vec<IpAddr>,
+    pub peers: HashSet<IpAddr>,
     /// Cache file path
     pub cache_file: PathBuf,
 }
@@ -39,7 +39,7 @@ pub struct FileSyncConfig {
     /// Download temporary directory
     pub tmp_dir: PathBuf,
     /// Peers IP address
-    pub peers: Vec<IpAddr>,
+    pub peers: HashSet<IpAddr>,
     /// Cache file path
     pub cache_file: PathBuf,
 }
@@ -91,10 +91,10 @@ mod tests {
         let expected = FileSyncConfigDataAux {
             sync_dir: PathBuf::from("/mnt/sync"),
             tmp_dir: PathBuf::from("/tmp"),
-            peers: vec![
+            peers: HashSet::from([
                 IpAddr::V4(Ipv4Addr::new(192, 0, 0, 1)),
                 IpAddr::V4(Ipv4Addr::new(192, 0, 0, 2)),
-            ],
+            ]),
             cache_file: PathBuf::from("/tmp/cache.yaml"),
         };
         let s = "sync_dir: /mnt/sync
@@ -113,10 +113,10 @@ cache_file: /tmp/cache.yaml
         let expected = FileSyncConfigDataAux {
             sync_dir: PathBuf::from("/mnt/sync"),
             tmp_dir: PathBuf::from("/tmp"),
-            peers: vec![
+            peers: HashSet::from([
                 IpAddr::V4(Ipv4Addr::new(192, 0, 0, 1)),
                 IpAddr::V4(Ipv4Addr::new(192, 0, 0, 2)),
-            ],
+            ]),
             cache_file: PathBuf::from("/tmp/cache.yaml"),
         };
         let s = "sync_dir: /mnt/sync

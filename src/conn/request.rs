@@ -37,6 +37,11 @@ pub enum RequestData {
         /// Peer address
         addr: IpAddr,
     },
+    /// Remove peer
+    RemovePeer {
+        /// Peer address
+        addr: IpAddr,
+    },
     /// File bytes chunk
     FileContent {
         /// File path
@@ -99,6 +104,7 @@ impl From<&RequestData> for RequestVerb {
             RequestData::MovedFile { .. } => RequestVerb::MV,
             RequestData::NewFile { .. } => RequestVerb::NEW,
             RequestData::RemoveFile { .. } => RequestVerb::RM,
+            RequestData::RemovePeer { .. } => RequestVerb::RMP,
         }
     }
 }
@@ -106,7 +112,9 @@ impl From<&RequestData> for RequestVerb {
 impl From<RequestData> for Vec<u8> {
     fn from(val: RequestData) -> Self {
         match val {
-            RequestData::NewPeer { addr } => addr.to_string().as_bytes().into(),
+            RequestData::NewPeer { addr } | RequestData::RemovePeer { addr } => {
+                addr.to_string().as_bytes().into()
+            }
             RequestData::FileContent {
                 path,
                 part,
@@ -242,6 +250,12 @@ impl TryFrom<&Vec<u8>> for RequestData {
                     path: path_str.into(),
                 })
             }
+            RequestVerb::RMP => {
+                let addr_raw = String::from_utf8(request_data.to_vec())?;
+                let addr = IpAddr::from_str(&addr_raw)?;
+
+                Ok(Self::RemovePeer { addr })
+            }
             RequestVerb::TREE => Ok(RequestData::GetFileTree),
         }
     }
@@ -268,6 +282,8 @@ enum RequestVerb {
     NEW,
     /// File removed
     RM,
+    /// Peer removed
+    RMP,
     /// List all files
     TREE,
 }
@@ -284,6 +300,7 @@ impl From<RequestVerb> for Vec<u8> {
             RequestVerb::MV => b"MV  ",
             RequestVerb::NEW => b"NEW ",
             RequestVerb::RM => b"RM  ",
+            RequestVerb::RMP => b"RMP ",
             RequestVerb::TREE => b"TREE",
         }
         .into()
@@ -304,6 +321,7 @@ impl TryFrom<Vec<u8>> for RequestVerb {
             val if val == b"MV  " => Ok(RequestVerb::MV),
             val if val == b"NEW " => Ok(RequestVerb::NEW),
             val if val == b"RM  " => Ok(RequestVerb::RM),
+            val if val == b"RMP " => Ok(RequestVerb::RMP),
             val if val == b"TREE" => Ok(RequestVerb::TREE),
             _ => bail!("Invalid verb: {value:?}"),
         }

@@ -51,6 +51,11 @@ pub enum Event {
         /// Peer address
         addr: IpAddr,
     },
+    /// Peer removed
+    PeerRemoved {
+        /// Peer address
+        addr: IpAddr,
+    },
     /// New file created
     FileCreated {
         /// File path
@@ -95,6 +100,7 @@ impl Display for Event {
             Event::DownloadFile { path } => format!("DownloadFile({})", path.display()),
             Event::UploadFile { path } => format!("UploadFile({})", path.display()),
             Event::PeerAdded { addr } => format!("PeerAdded({addr})"),
+            Event::PeerRemoved { addr } => format!("PeerRemoved({addr})"),
             Event::SendFilesList => "SendFilesList".to_string(),
         };
 

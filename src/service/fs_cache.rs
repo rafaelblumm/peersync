@@ -274,8 +274,7 @@ fn load_cache(config: &FileSyncConfigRef) -> Result<FsCacheMap> {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::Arc,
-        time::{SystemTime, UNIX_EPOCH},
+        collections::HashSet, sync::Arc, time::{SystemTime, UNIX_EPOCH},
     };
 
     use crate::server::config::FileSyncConfig;
@@ -299,7 +298,7 @@ mod tests {
             config_file: PathBuf::from("/tmp/config.yml"),
             sync_dir,
             tmp_dir: base.join("tmp"),
-            peers: vec![],
+            peers: HashSet::new(),
             cache_file: base.join("cache.yaml"),
         }));
 
