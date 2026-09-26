@@ -42,6 +42,7 @@ impl Publisher for ControlListenerPublisher {
                 source: EventSource::Peer(src),
                 event: match request.data {
                     RequestData::NewPeer { addr } => Event::PeerAdded { addr },
+                    RequestData::RemovePeer { addr } => Event::PeerRemoved { addr },
                     RequestData::GetFileContent { path } => Event::UploadFile { path },
                     RequestData::NewFile { path } => Event::FileCreated { path },
                     RequestData::RemoveFile { path } => Event::FileDeleted { path },
