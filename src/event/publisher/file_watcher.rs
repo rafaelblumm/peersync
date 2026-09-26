@@ -18,9 +18,8 @@ use notify_debouncer_full::{DebouncedEvent, RecommendedCache, new_debouncer_opt}
 
 use crate::{
     event::{
-        Event, EventEnvelope, EventSource, ignore_tracker::IgnoreTracker, publisher::Publisher,
-    },
-    server::FileSyncConfigRef,
+        Event, EventEnvelope, EventSource, publisher::Publisher,
+    }, server::FileSyncConfigRef, service::ignore_tracker::IgnoreTracker,
 };
 
 /// File-system event watcher

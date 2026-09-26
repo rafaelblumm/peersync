@@ -1,7 +1,8 @@
 pub mod config_updater;
 pub mod event_announcer;
-pub mod file_sender;
 pub mod file_receiver;
+pub mod file_sender;
+pub mod fs_tree_sender;
 pub mod fs_worker;
 
 use anyhow::Result;

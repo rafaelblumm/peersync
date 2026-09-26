@@ -1,30 +1,29 @@
 use std::{
     fs::File,
     io::{BufRead, BufReader},
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
     path::PathBuf,
-    sync::Arc,
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use log::warn;
 use sha2::{Digest, Sha256};
 
 use crate::{
     conn::request::{Request, RequestData},
     event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
-    fs_cache::FsCache,
-    server::{DATA_SOCKET_PORT, FileSyncConfigRef},
+    server::{DATA_SOCKET_PORT, FileSyncConfigRef, UdpSocketMutex},
+    service::fs_cache::FsCacheRef,
 };
 
 /// File content sender
 pub struct FileSenderSubscriber {
     /// Data transfer socket
-    data_socket: Arc<UdpSocket>,
+    data_socket: UdpSocketMutex,
     /// Server settings shared reference
     config: FileSyncConfigRef,
     /// Shared FS cache reference
-    fs_cache: Arc<FsCache>,
+    fs_cache: FsCacheRef,
 }
 
 impl Subscriber for FileSenderSubscriber {
@@ -45,9 +44,9 @@ impl Subscriber for FileSenderSubscriber {
 
 impl FileSenderSubscriber {
     pub fn new(
-        data_socket: Arc<UdpSocket>,
+        data_socket: UdpSocketMutex,
         config: FileSyncConfigRef,
-        fs_cache: Arc<FsCache>,
+        fs_cache: FsCacheRef,
     ) -> Self {
         Self {
             data_socket,
@@ -64,6 +63,10 @@ impl FileSenderSubscriber {
         let mut reader = BufReader::with_capacity(1000, file);
         let mut part = 0;
         let mut hasher = Sha256::new();
+        let socket = self
+            .data_socket
+            .lock()
+            .map_err(|e| anyhow!("Error acquiring data socket lock: {e}"))?;
 
         loop {
             part += 1;
@@ -81,7 +84,7 @@ impl FileSenderSubscriber {
                     },
                 };
                 let req_bytes: Box<[u8]> = request.into();
-                self.data_socket.send_to(&req_bytes, addr)?;
+                socket.send_to(&req_bytes, addr)?;
 
                 len
             };
@@ -94,13 +97,16 @@ impl FileSenderSubscriber {
 
         let hash = hex::encode(hasher.finalize());
         if let Err(e) = self.fs_cache.update_hash(path, &hash) {
-            warn!("Error updating file hash ({} = '{hash}'): {e}", path.display())
+            warn!(
+                "Error updating file hash ({} = '{hash}'): {e}",
+                path.display()
+            )
         }
         let request = Request {
             data: RequestData::EndOfFile { sha256: hash },
         };
         let req_bytes: Box<[u8]> = request.into();
-        self.data_socket.send_to(&req_bytes, addr)?;
+        socket.send_to(&req_bytes, addr)?;
 
         Ok(())
     }

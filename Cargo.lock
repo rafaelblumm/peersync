@@ -384,6 +384,7 @@ dependencies = [
  "sha2",
  "simplelog",
  "tokio",
+ "walkdir",
  "yaml_serde",
 ]
 
