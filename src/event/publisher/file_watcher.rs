@@ -189,3 +189,156 @@ impl FileWatcherPublisher {
             .unwrap_or(path.into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashSet, fs, process, sync::{
+            Arc, RwLock,
+            mpsc::{Receiver, channel},
+        }, time::Instant,
+    };
+
+    use notify::{Event as NotifyEvent, event::EventAttributes};
+
+    use super::*;
+    use crate::server::config::FileSyncConfig;
+
+    fn watcher() -> (
+        FileWatcherPublisher,
+        Receiver<EventEnvelope>,
+        Arc<IgnoreTracker>,
+    ) {
+        let (sender, receiver) = channel();
+        let ignore_tracker = Arc::new(IgnoreTracker::new());
+        let config = Arc::new(RwLock::new(FileSyncConfig {
+            config_file: PathBuf::from("/config.yml"),
+            sync_dir: PathBuf::from("/sync"),
+            tmp_dir: PathBuf::from("/sync/tmp"),
+            peers: HashSet::new(),
+            cache_file: PathBuf::from("/cache.yml"),
+        }));
+
+        (
+            FileWatcherPublisher::new(sender, config, ignore_tracker.clone()),
+            receiver,
+            ignore_tracker,
+        )
+    }
+
+    fn event(kind: EventKind, paths: Vec<PathBuf>) -> DebouncedEvent {
+        DebouncedEvent::new(
+            NotifyEvent {
+                kind,
+                paths,
+                attrs: EventAttributes::default(),
+            },
+            Instant::now(),
+        )
+    }
+
+    #[test]
+    fn test_modified_and_removed_event_conversion() {
+        let (watcher, _, _) = watcher();
+
+        assert_eq!(
+            watcher.fs_into_event(event(
+                EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Content)),
+                vec![PathBuf::from("/sync/docs/report.txt")],
+            )),
+            Some(vec![Event::FileCreated {
+                path: PathBuf::from("docs/report.txt"),
+            }])
+        );
+        assert_eq!(
+            watcher.fs_into_event(event(
+                EventKind::Remove(RemoveKind::File),
+                vec![PathBuf::from("/sync/docs/old.txt")],
+            )),
+            Some(vec![Event::FileDeleted {
+                path: PathBuf::from("docs/old.txt"),
+            }])
+        );
+    }
+
+    #[test]
+    fn test_rename_and_tmp_promotion_event_conversion() {
+        let (watcher, _, _) = watcher();
+        let rename_kind = EventKind::Modify(ModifyKind::Name(RenameMode::Both));
+
+        assert_eq!(
+            watcher.fs_into_event(event(
+                rename_kind,
+                vec![
+                    PathBuf::from("/sync/old.txt"),
+                    PathBuf::from("/sync/new.txt"),
+                ],
+            )),
+            Some(vec![Event::FileMoved {
+                from: PathBuf::from("old.txt"),
+                to: PathBuf::from("new.txt"),
+            }])
+        );
+        assert_eq!(
+            watcher.fs_into_event(event(
+                EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+                vec![
+                    PathBuf::from("/sync/tmp/download.part"),
+                    PathBuf::from("/sync/download.txt"),
+                ],
+            )),
+            Some(vec![Event::FileCreated {
+                path: PathBuf::from("download.txt"),
+            }])
+        );
+    }
+
+    #[test]
+    fn test_converts_only_existing_created_files() {
+        let (watcher, _, _) = watcher();
+        let created_path =
+            std::env::temp_dir().join(format!("peersync-file-watcher-test-{}", process::id()));
+        fs::write(&created_path, "test").unwrap();
+
+        let events = watcher.fs_into_event(event(
+            EventKind::Create(CreateKind::File),
+            vec![created_path.clone(), PathBuf::from("/sync/missing.txt")],
+        ));
+
+        fs::remove_file(&created_path).unwrap();
+        assert_eq!(
+            events,
+            Some(vec![Event::FileCreated { path: created_path }])
+        );
+    }
+
+    #[test]
+    fn test_event_filters() {
+        let (watcher, receiver, ignore_tracker) = watcher();
+        ignore_tracker.mark("ignored.txt");
+
+        watcher
+            .handle_fs_events(vec![
+                event(
+                    EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Content)),
+                    vec![PathBuf::from("/sync/ignored.txt")],
+                ),
+                event(
+                    EventKind::Modify(ModifyKind::Data(notify::event::DataChange::Content)),
+                    vec![PathBuf::from("/sync/shared.txt")],
+                ),
+            ])
+            .unwrap();
+
+        assert_eq!(
+            receiver.try_recv().unwrap(),
+            EventEnvelope {
+                source: EventSource::Local,
+                event: Event::FileCreated {
+                    path: PathBuf::from("shared.txt"),
+                },
+            }
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+}

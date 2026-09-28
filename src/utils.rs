@@ -13,3 +13,21 @@ pub fn dir_walker(path: &PathBuf) -> WalkDir {
 pub fn is_valid_entry(entry: &DirEntry) -> bool {
     entry.file_type().is_dir() || (entry.file_type().is_file() && !entry.file_name().is_empty())
 }
+
+#[cfg(test)]
+pub mod test_net {
+    use std::sync::{Mutex, MutexGuard};
+
+    static CONTROL_PORT_LOCK: Mutex<()> = Mutex::new(());
+    static DATA_PORT_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Serializes tests binding the fixed control socket port
+    pub fn control_port_guard() -> MutexGuard<'static, ()> {
+        CONTROL_PORT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Serializes tests binding the fixed data socket port
+    pub fn data_port_guard() -> MutexGuard<'static, ()> {
+        DATA_PORT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}

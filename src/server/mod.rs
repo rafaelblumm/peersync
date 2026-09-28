@@ -88,7 +88,7 @@ impl FileSyncServer {
             data_socket.clone(),
             control_socket.clone(),
             ignore_tracker.clone(),
-            sync_receiver
+            sync_receiver,
         )
         .into_iter()
         .try_for_each(|(thread_name, publisher)| {

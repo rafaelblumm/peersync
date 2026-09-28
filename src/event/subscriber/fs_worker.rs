@@ -84,3 +84,147 @@ impl FsWorkerSubscriber {
         self.config.read().unwrap().sync_dir.join(path)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashSet,
+        fs,
+        sync::{Arc, RwLock},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+    use crate::{
+        event::{Event, EventEnvelope, EventSource},
+        server::config::FileSyncConfig,
+        service::fs_cache::FsCache,
+    };
+
+    fn worker() -> (FsWorkerSubscriber, PathBuf) {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "peersync-fs-worker-test-{nanos}-{:?}",
+            std::thread::current().id()
+        ));
+        let sync_dir = base.join("sync");
+        fs::create_dir_all(&sync_dir).unwrap();
+
+        let config = Arc::new(RwLock::new(FileSyncConfig {
+            config_file: base.join("config.yml"),
+            sync_dir,
+            tmp_dir: base.join("tmp"),
+            peers: HashSet::new(),
+            cache_file: base.join("cache.yaml"),
+        }));
+        let fs_cache = Arc::new(FsCache::load(config.clone()).unwrap());
+
+        (
+            FsWorkerSubscriber::new(config, Arc::new(IgnoreTracker::new()), fs_cache),
+            base,
+        )
+    }
+
+    fn peer_event(event: Event) -> EventEnvelope {
+        EventEnvelope {
+            source: EventSource::Peer("127.0.0.1:9000".parse().unwrap()),
+            event,
+        }
+    }
+
+    #[test]
+    fn test_filter() {
+        assert!(FsWorkerSubscriber::filter(&peer_event(
+            Event::FileDeleted {
+                path: PathBuf::from("old.txt"),
+            }
+        )));
+        assert!(FsWorkerSubscriber::filter(&peer_event(Event::FileMoved {
+            from: PathBuf::from("old.txt"),
+            to: PathBuf::from("new.txt"),
+        })));
+        assert!(!FsWorkerSubscriber::filter(&EventEnvelope {
+            source: EventSource::Local,
+            event: Event::FileDeleted {
+                path: PathBuf::from("old.txt"),
+            },
+        }));
+        assert!(!FsWorkerSubscriber::filter(&peer_event(
+            Event::FileCreated {
+                path: PathBuf::from("new.txt"),
+            }
+        )));
+    }
+
+    #[test]
+    fn test_file_removal() {
+        let (worker, base) = worker();
+        let path = PathBuf::from("old.txt");
+        let full_path = base.join("sync").join(&path);
+        fs::write(&full_path, "content").unwrap();
+
+        worker
+            .act(&peer_event(Event::FileDeleted { path: path.clone() }))
+            .unwrap();
+
+        assert!(!full_path.exists());
+        assert!(worker.ignore_tracker.should_ignore(&path));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn test_file_renaming() {
+        let (worker, base) = worker();
+        let from = PathBuf::from("old.txt");
+        let to = PathBuf::from("new.txt");
+        fs::write(base.join("sync").join(&from), "content").unwrap();
+        let hash = worker.fs_cache.get_or_load_hash(&from).unwrap();
+
+        worker
+            .act(&peer_event(Event::FileMoved {
+                from: from.clone(),
+                to: to.clone(),
+            }))
+            .unwrap();
+
+        assert!(!base.join("sync").join(&from).exists());
+        assert!(base.join("sync").join(&to).exists());
+        assert!(worker.fs_cache.hash_matches(&to, &hash).unwrap());
+        assert!(worker.ignore_tracker.should_ignore(&from));
+        assert!(worker.ignore_tracker.should_ignore(&to));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn test_directory_renaming() {
+        let (worker, base) = worker();
+        let from = PathBuf::from("old-dir");
+        let to = PathBuf::from("new-dir");
+        let file = from.join("nested.txt");
+        fs::create_dir_all(base.join("sync").join(&from)).unwrap();
+        fs::write(base.join("sync").join(&file), "content").unwrap();
+        let hash = worker.fs_cache.get_or_load_hash(&file).unwrap();
+
+        worker
+            .act(&peer_event(Event::FileMoved {
+                from: from.clone(),
+                to: to.clone(),
+            }))
+            .unwrap();
+
+        assert!(!base.join("sync").join(&from).exists());
+        assert!(base.join("sync").join(&to).join("nested.txt").exists());
+        assert!(
+            worker
+                .fs_cache
+                .hash_matches(&to.join("nested.txt"), &hash)
+                .unwrap()
+        );
+        assert!(worker.ignore_tracker.should_ignore(&from));
+        assert!(worker.ignore_tracker.should_ignore(&to));
+        fs::remove_dir_all(base).unwrap();
+    }
+}
