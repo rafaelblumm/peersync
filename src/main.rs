@@ -11,7 +11,7 @@ use std::{
     thread,
 };
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use log::{Level, LevelFilter, info};
 use simplelog::{Color, ColorChoice, ConfigBuilder, TermLogger, TerminalMode};
@@ -29,6 +29,9 @@ struct Args {
     /// Application settings file
     #[arg(short, long, default_value = "./config.yml")]
     config: PathBuf,
+    /// Start server in daemon mode, no GUI
+    #[arg(short, long)]
+    daemon: bool,
 }
 
 #[tokio::main]
@@ -42,12 +45,18 @@ async fn main() -> Result<()> {
 
     info!("Starting server");
     let server = FileSyncServer::new(config.clone(), fs_cache.clone())?;
-    thread::spawn(move || server.serve(gui_receiver));
+    let server_thread = thread::spawn(move || server.serve(gui_receiver));
 
-    info!("Starting GUI");
-    show_gui(config.clone(), fs_cache.clone(), gui_sender.clone())?;
-
-    Ok(())
+    if args.daemon {
+        info!("Running on daemon mode");
+        server_thread
+            .join()
+            .map_err(|e| anyhow!("Server thread join error: {e:?}"))
+            .flatten()
+    } else {
+        info!("Starting GUI");
+        show_gui(config.clone(), fs_cache.clone(), gui_sender.clone())
+    }
 }
 
 /// Setup custom logger
