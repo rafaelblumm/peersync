@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::Result;
 
-use log::{debug, error};
+use log::{debug, error, info};
 use notify::{
     Config, EventKind, RecommendedWatcher, RecursiveMode,
     event::{CreateKind, ModifyKind, RemoveKind, RenameMode},
@@ -41,7 +41,7 @@ impl Publisher for FileWatcherPublisher {
         debug!("FileWatcherPublisher started");
 
         let sync_dir = self.config.read().unwrap().sync_dir.clone();
-        println!("Watching {}", sync_dir.display());
+        info!("Watching {}", sync_dir.display());
 
         let (tx, rx) = channel();
         let mut debouncer = new_debouncer_opt::<_, RecommendedWatcher, RecommendedCache>(

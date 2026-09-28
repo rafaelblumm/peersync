@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs,
     path::PathBuf,
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
@@ -244,6 +244,16 @@ impl FsCache {
         fs::write(cache_file, content)?;
 
         Ok(())
+    }
+
+    /// Dump path and hash cache
+    pub fn dump_cache(&self) -> BTreeMap<PathBuf, String> {
+        BTreeMap::from_iter(
+            self.read_lock()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.hash.to_string())),
+        )
     }
 
     /// Acquires read-only lock on cache map

@@ -48,50 +48,64 @@ impl Router {
         }
     }
 
-    /// Route event to appropriate subscriber
+    /// Route event to appropriate subscribers
     pub fn route(&self, ee: &EventEnvelope) -> Result<()> {
         debug!("Routing event: {ee}");
 
-        self.find_subscriber(ee)?.act(ee)
+        self.find_subscribers(ee)?
+            .into_iter()
+            .map(|subscriber| subscriber.act(ee))
+            .collect()
     }
 
-    /// Finds appropriate subscriber
-    fn find_subscriber(&self, ee: &EventEnvelope) -> Result<Box<dyn Subscriber>> {
+    /// Finds appropriate subscribers
+    fn find_subscribers(&self, ee: &EventEnvelope) -> Result<Vec<Box<dyn Subscriber>>> {
+        let mut subs: Vec<Box<dyn Subscriber>> = vec![];
+
         if ConfigUpdaterSubscriber::filter(ee) {
-            Ok(Box::new(ConfigUpdaterSubscriber::new(self.config.clone())))
-        } else if EventAnnouncerSubscriber::filter(ee) {
-            Ok(Box::new(EventAnnouncerSubscriber::new(
+            subs.push(Box::new(ConfigUpdaterSubscriber::new(self.config.clone())));
+        }
+        if EventAnnouncerSubscriber::filter(ee) {
+            subs.push(Box::new(EventAnnouncerSubscriber::new(
                 self.control_socket.clone(),
                 self.config.clone(),
-            )))
-        } else if FsTreeSenderSubscriber::filter(ee) {
-            Ok(Box::new(FsTreeSenderSubscriber::new(
+            )));
+        }
+        if FsTreeSenderSubscriber::filter(ee) {
+            subs.push(Box::new(FsTreeSenderSubscriber::new(
                 self.data_socket.clone(),
                 self.config.clone(),
                 self.fs_cache.clone(),
-            )))
-        } else if FileReceiverSubscriber::filter(ee) {
-            Ok(Box::new(FileReceiverSubscriber::new(
+            )));
+        }
+        if FileReceiverSubscriber::filter(ee) {
+            subs.push(Box::new(FileReceiverSubscriber::new(
                 self.control_socket.clone(),
                 self.data_socket.clone(),
                 self.config.clone(),
                 self.ignore_tracker.clone(),
                 self.fs_cache.clone(),
-            )))
-        } else if FileSenderSubscriber::filter(ee) {
-            Ok(Box::new(FileSenderSubscriber::new(
+            )));
+        }
+        if FileSenderSubscriber::filter(ee) {
+            subs.push(Box::new(FileSenderSubscriber::new(
                 self.data_socket.clone(),
                 self.config.clone(),
                 self.fs_cache.clone(),
-            )))
-        } else if FsWorkerSubscriber::filter(ee) {
-            Ok(Box::new(FsWorkerSubscriber::new(
+            )));
+        }
+        if FsWorkerSubscriber::filter(ee) {
+            subs.push(Box::new(FsWorkerSubscriber::new(
                 self.config.clone(),
                 self.ignore_tracker.clone(),
                 self.fs_cache.clone(),
-            )))
-        } else {
+            )));
+        }
+
+        if subs.is_empty() {
             bail!("No appropriate subscriber available")
         }
+
+        Ok(subs)
     }
 }

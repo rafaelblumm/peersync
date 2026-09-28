@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow, bail};
 use log::{debug, warn};
 
 use crate::{
-    event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
+    event::{Event, EventEnvelope, subscriber::Subscriber},
     server::{FileSyncConfigRef, config::FileSyncConfig},
 };
 
@@ -19,11 +19,10 @@ impl Subscriber for ConfigUpdaterSubscriber {
     where
         Self: Sized,
     {
-        matches!(ee.source, EventSource::Peer(..))
-            && matches!(
-                ee.event,
-                Event::PeerAdded { .. } | Event::PeerRemoved { .. }
-            )
+        matches!(
+            ee.event,
+            Event::PeerAdded { .. } | Event::PeerRemoved { .. }
+        )
     }
 
     fn act(&self, ee: &EventEnvelope) -> Result<()> {

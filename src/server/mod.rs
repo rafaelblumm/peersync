@@ -21,6 +21,7 @@ use crate::{
             Publisher,
             control_listener::ControlListenerPublisher,
             file_watcher::FileWatcherPublisher,
+            gui_listener::{GuiEventRequest, GuiListenerPublisher},
             synchronizer::{SyncPublisher, SyncRequest},
         },
         router::Router,
@@ -48,24 +49,20 @@ pub type UdpSocketMutex = Arc<Mutex<UdpSocket>>;
 pub struct FileSyncServer {
     config: FileSyncConfigRef,
     fs_cache: FsCacheRef,
-    /// Sync request sender channel
-    sync_sender: Sender<SyncRequest>,
 }
 
 impl FileSyncServer {
     pub fn new(
         config: FileSyncConfigRef,
         fs_cache: FsCacheRef,
-        sync_sender: Sender<SyncRequest>,
     ) -> Result<Self> {
         Ok(Self {
             config,
             fs_cache,
-            sync_sender,
         })
     }
 
-    pub fn serve(&self, sync_receiver: Receiver<SyncRequest>) -> Result<()> {
+    pub fn serve(&self, gui_receiver: Receiver<GuiEventRequest>) -> Result<()> {
         let sync_dir = self.config.read().unwrap().sync_dir.clone();
         if !sync_dir.exists() {
             fs::create_dir_all(&sync_dir)?;
@@ -81,14 +78,17 @@ impl FileSyncServer {
             .set_read_timeout(Some(Duration::from_secs(5)))?;
         let (sender, receiver) = channel();
 
-        self.sync_sender.send(SyncRequest::ServerStartup)?;
+        let (sync_sender, sync_receiver) = channel();
+        sync_sender.send(SyncRequest::ServerStartup)?;
 
         self.get_publishers(
             sender,
             data_socket.clone(),
             control_socket.clone(),
             ignore_tracker.clone(),
+            sync_sender,
             sync_receiver,
+            gui_receiver,
         )
         .into_iter()
         .try_for_each(|(thread_name, publisher)| {
@@ -117,11 +117,13 @@ impl FileSyncServer {
         data_socket: Arc<Mutex<UdpSocket>>,
         control_socket: Arc<UdpSocket>,
         ignore_tracker: Arc<IgnoreTracker>,
+        sync_sender: Sender<SyncRequest>,
         sync_receiver: Receiver<SyncRequest>,
+        gui_receiver: Receiver<GuiEventRequest>,
     ) -> Vec<(String, Box<dyn Publisher + Send>)> {
         vec![
             (
-                "SyncPublisher".into(),
+                "SyncPublisherThread".into(),
                 Box::new(SyncPublisher::new(
                     sync_receiver,
                     sender.clone(),
@@ -129,6 +131,14 @@ impl FileSyncServer {
                     self.fs_cache.clone(),
                     data_socket.clone(),
                     control_socket.clone(),
+                )),
+            ),
+            (
+                "GuiListenerPublisher".into(),
+                Box::new(GuiListenerPublisher::new(
+                    gui_receiver,
+                    sender.clone(),
+                    sync_sender,
                 )),
             ),
             (

@@ -29,6 +29,7 @@ impl Subscriber for EventAnnouncerSubscriber {
                     | Event::FileDeleted { .. }
                     | Event::FileMoved { .. }
                     | Event::PeerAdded { .. }
+                    | Event::PeerRemoved { .. }
             )
     }
 
@@ -44,6 +45,7 @@ impl Subscriber for EventAnnouncerSubscriber {
                     to: to.into(),
                 },
                 Event::PeerAdded { addr } => RequestData::NewPeer { addr: *addr },
+                Event::PeerRemoved { addr } => RequestData::RemovePeer { addr: *addr },
                 _ => bail!("Operation not supported"),
             },
         };
