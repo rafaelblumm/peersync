@@ -1,5 +1,6 @@
 pub mod control_listener;
 pub mod file_watcher;
+pub mod gui_listener;
 pub mod synchronizer;
 
 use std::sync::mpsc::Sender;

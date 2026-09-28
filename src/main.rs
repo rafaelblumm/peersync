@@ -1,5 +1,6 @@
 pub mod conn;
 pub mod event;
+pub mod gui;
 pub mod server;
 pub mod service;
 pub mod utils;
@@ -7,14 +8,16 @@ pub mod utils;
 use std::{
     path::PathBuf,
     sync::{Arc, RwLock, mpsc::channel},
+    thread,
 };
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use log::{Level, LevelFilter, info};
 use simplelog::{Color, ColorChoice, ConfigBuilder, TermLogger, TerminalMode};
 
 use crate::{
+    gui::show_gui,
     server::{FileSyncConfigRef, FileSyncServer, config::FileSyncConfig},
     service::fs_cache::FsCache,
 };
@@ -26,6 +29,9 @@ struct Args {
     /// Application settings file
     #[arg(short, long, default_value = "./config.yml")]
     config: PathBuf,
+    /// Start server in daemon mode, no GUI
+    #[arg(short, long)]
+    daemon: bool,
 }
 
 #[tokio::main]
@@ -35,10 +41,22 @@ async fn main() -> Result<()> {
 
     let config = load_config(&args.config)?;
     let fs_cache = Arc::new(FsCache::load(config.clone())?);
-    let (sync_sender, sync_receiver) = channel();
+    let (gui_sender, gui_receiver) = channel();
 
     info!("Starting server");
-    FileSyncServer::new(config, fs_cache, sync_sender)?.serve(sync_receiver)
+    let server = FileSyncServer::new(config.clone(), fs_cache.clone())?;
+    let server_thread = thread::spawn(move || server.serve(gui_receiver));
+
+    if args.daemon {
+        info!("Running on daemon mode");
+        server_thread
+            .join()
+            .map_err(|e| anyhow!("Server thread join error: {e:?}"))
+            .flatten()
+    } else {
+        info!("Starting GUI");
+        show_gui(config.clone(), fs_cache.clone(), gui_sender.clone())
+    }
 }
 
 /// Setup custom logger
@@ -50,6 +68,7 @@ fn setup_logger() -> Result<()> {
         .set_level_color(Level::Info, Some(Color::Rgb(192, 192, 0)))
         .set_level_color(Level::Debug, Some(Color::Rgb(63, 127, 0)))
         .set_level_color(Level::Trace, Some(Color::Rgb(127, 127, 255)))
+        .add_filter_allow_str("peersync")
         .build();
     TermLogger::init(
         LevelFilter::Debug,
@@ -64,7 +83,7 @@ fn setup_logger() -> Result<()> {
 /// Load server config from file
 fn load_config(file: &PathBuf) -> Result<FileSyncConfigRef> {
     info!("Loading server config file: {}", file.display());
-    let config = FileSyncConfig::load(file)?;
+    let config = FileSyncConfig::load_and_persist_patch(file)?;
 
     Ok(Arc::new(RwLock::new(config)))
 }
