@@ -1,4 +1,8 @@
-use std::{fmt::{Display, Formatter}, net::{IpAddr, SocketAddr}, path::PathBuf};
+use std::{
+    fmt::{Display, Formatter},
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 
 pub mod broker;
 pub mod publisher;
@@ -92,11 +96,9 @@ impl Display for Event {
         let fmt = match self {
             Event::FileCreated { path } => format!("FileCreated({})", path.display()),
             Event::FileDeleted { path } => format!("FileDeleted({})", path.display()),
-            Event::FileMoved { from, to } => format!(
-                "FileMoved({}, {})",
-                from.display(),
-                to.display()
-            ),
+            Event::FileMoved { from, to } => {
+                format!("FileMoved({}, {})", from.display(), to.display())
+            }
             Event::DownloadFile { path } => format!("DownloadFile({})", path.display()),
             Event::UploadFile { path } => format!("UploadFile({})", path.display()),
             Event::PeerAdded { addr } => format!("PeerAdded({addr})"),

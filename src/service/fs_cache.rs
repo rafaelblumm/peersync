@@ -77,7 +77,8 @@ impl FsCache {
             self.update_hash_if_old(&p.to_path_buf())?;
         }
 
-        let obsolete_keys = self.read_lock()?
+        let obsolete_keys = self
+            .read_lock()?
             .keys()
             .into_iter()
             .filter_map(|k| {
@@ -274,7 +275,9 @@ fn load_cache(config: &FileSyncConfigRef) -> Result<FsCacheMap> {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashSet, sync::Arc, time::{SystemTime, UNIX_EPOCH},
+        collections::HashSet,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
     };
 
     use crate::server::config::FileSyncConfig;

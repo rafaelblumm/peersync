@@ -1,5 +1,5 @@
-pub mod file_watcher;
 pub mod control_listener;
+pub mod file_watcher;
 pub mod synchronizer;
 
 use std::sync::mpsc::Sender;
@@ -21,8 +21,6 @@ pub trait Publisher {
     fn publish(&self, ee: EventEnvelope) -> Result<()> {
         debug!("Publishing event: {ee}");
 
-        self.get_sender()
-            .send(ee)
-            .map_err(anyhow::Error::msg)
+        self.get_sender().send(ee).map_err(anyhow::Error::msg)
     }
 }

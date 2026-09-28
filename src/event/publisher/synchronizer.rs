@@ -233,7 +233,7 @@ impl SyncPublisher {
                 Err(e) => {
                     errors += 1;
                     error!("Could not retrieve peer {p} files: {e}")
-                },
+                }
             }
         }
         if errors == peers.len() {
@@ -275,5 +275,208 @@ impl SyncPublisher {
         }
 
         Ok(files)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::HashSet,
+        env, fs,
+        net::{IpAddr, Ipv4Addr},
+        sync::{Arc, Mutex, RwLock, mpsc::channel},
+        thread,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    use super::*;
+    use crate::{server::config::FileSyncConfig, service::fs_cache::FsCache, utils::test_net};
+
+    /// Test context to cleanup filesystem after test execution
+    struct TestContext {
+        base: PathBuf,
+        publisher: SyncPublisher,
+    }
+
+    impl TestContext {
+        fn new(peers: HashSet<IpAddr>) -> Self {
+            let base = env::temp_dir().join(format!(
+                "peersync-synchronizer-test-{}-{:?}",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+                thread::current().id()
+            ));
+            let sync_dir = base.join("sync");
+            fs::create_dir_all(&sync_dir).unwrap();
+
+            let config = Arc::new(RwLock::new(FileSyncConfig {
+                config_file: base.join("config.yml"),
+                sync_dir,
+                tmp_dir: base.join("tmp"),
+                peers,
+                cache_file: base.join("cache.yaml"),
+            }));
+            let fs_cache = Arc::new(FsCache::load(config.clone()).unwrap());
+            let (sender, _) = channel();
+            let (sync_sender, sync_receiver) = channel();
+            drop(sync_sender);
+
+            Self {
+                base,
+                publisher: SyncPublisher::new(
+                    sync_receiver,
+                    sender,
+                    config,
+                    fs_cache,
+                    Arc::new(Mutex::new(UdpSocket::bind("127.0.0.1:0").unwrap())),
+                    Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap()),
+                ),
+            }
+        }
+
+        fn sync_dir(&self) -> PathBuf {
+            self.base.join("sync")
+        }
+    }
+
+    impl Drop for TestContext {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.base).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_missing_server_shutdown_date() {
+        let context = TestContext::new(HashSet::new());
+        fs::remove_file(context.base.join("cache.yaml")).unwrap();
+
+        assert_eq!(
+            context.publisher.get_last_server_shutdown_time().unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_existing_server_shutdown_date() {
+        let context = TestContext::new(HashSet::new());
+        let cache_file = context.base.join("cache.yaml");
+        fs::write(&cache_file, "cache").unwrap();
+        let before = cache_file.metadata().unwrap().modified().unwrap();
+
+        let actual = context
+            .publisher
+            .get_last_server_shutdown_time()
+            .unwrap()
+            .unwrap();
+
+        assert!(actual >= before);
+    }
+
+    #[test]
+    fn test_get_sync_files_with_new_local() {
+        let context = TestContext::new(HashSet::new());
+        let path = PathBuf::from("new.txt");
+        fs::write(context.sync_dir().join(&path), "new").unwrap();
+        let socket = context.publisher.data_socket.lock().unwrap();
+
+        let events = context
+            .publisher
+            .get_files_to_sync(&socket, Some(UNIX_EPOCH))
+            .unwrap();
+
+        assert_eq!(
+            events,
+            vec![EventEnvelope {
+                source: EventSource::Local,
+                event: Event::FileCreated { path },
+            }]
+        );
+    }
+
+    #[test]
+    fn test_get_sync_files_with_old_local() {
+        let context = TestContext::new(HashSet::new());
+        let path = PathBuf::from("old.txt");
+        fs::write(context.sync_dir().join(&path), "old").unwrap();
+        let socket = context.publisher.data_socket.lock().unwrap();
+
+        let events = context
+            .publisher
+            .get_files_to_sync(&socket, Some(SystemTime::now() + Duration::from_secs(60)))
+            .unwrap();
+
+        assert_eq!(
+            events,
+            vec![EventEnvelope {
+                source: EventSource::Unknown,
+                event: Event::FileDeleted { path },
+            }]
+        );
+    }
+
+    #[test]
+    fn test_get_sync_files_ignored_directories() {
+        let context = TestContext::new(HashSet::new());
+        fs::create_dir(context.sync_dir().join("nested")).unwrap();
+        let socket = context.publisher.data_socket.lock().unwrap();
+
+        let events = context
+            .publisher
+            .get_files_to_sync(&socket, Some(UNIX_EPOCH))
+            .unwrap();
+
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_get_sync_files_with_missing_peer_files() {
+        let _port_guard = test_net::control_port_guard();
+        let peer = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let context = TestContext::new(HashSet::from([peer]));
+        let control_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, CONTROL_SOCKET_PORT)).unwrap();
+        let data_addr = context
+            .publisher
+            .data_socket
+            .lock()
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let peer_thread = thread::spawn(move || {
+            let mut request_buf = [0; 128];
+            control_socket.recv_from(&mut request_buf).unwrap();
+            let list_request = Request {
+                data: RequestData::ListFiles {
+                    sha256: "hash".into(),
+                    path: PathBuf::from("peer.txt"),
+                },
+            };
+            control_socket
+                .send_to(&Box::<[u8]>::from(list_request), data_addr)
+                .unwrap();
+            control_socket
+                .send_to(
+                    &Box::<[u8]>::from(Request {
+                        data: RequestData::EndOfTree,
+                    }),
+                    data_addr,
+                )
+                .unwrap();
+        });
+        let socket = context.publisher.data_socket.lock().unwrap();
+
+        let events = context.publisher.get_files_to_sync(&socket, None).unwrap();
+
+        peer_thread.join().unwrap();
+        assert_eq!(
+            events,
+            vec![EventEnvelope {
+                source: EventSource::Peer(SocketAddr::new(peer, CONTROL_SOCKET_PORT)),
+                event: Event::FileCreated {
+                    path: PathBuf::from("peer.txt"),
+                },
+            }]
+        );
     }
 }
