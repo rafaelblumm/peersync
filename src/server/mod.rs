@@ -2,18 +2,17 @@ pub mod config;
 
 use std::{
     fs,
-    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     sync::{
-        Arc, Mutex, RwLock,
+        Arc, RwLock,
         mpsc::{Receiver, Sender, channel},
     },
     thread::{self},
-    time::Duration,
 };
 
 use anyhow::Result;
 
 use crate::{
+    conn::{PeerConn, PeerConnRef},
     event::{
         EventEnvelope,
         broker::Broker,
@@ -30,21 +29,8 @@ use crate::{
     service::{fs_cache::FsCacheRef, ignore_tracker::IgnoreTracker},
 };
 
-/// Server address
-const SERVER_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-/// Control socket port, shared by every peer
-pub const CONTROL_SOCKET_PORT: u16 = 5000;
-/// Data socket port, shared by every peer
-pub const DATA_SOCKET_PORT: u16 = 5001;
-/// Control socket address
-const CONTROL_SOCKET_ADDR: SocketAddr = SocketAddr::new(SERVER_ADDR, CONTROL_SOCKET_PORT);
-/// Data socket address
-const DATA_SOCKET_ADDR: SocketAddr = SocketAddr::new(SERVER_ADDR, DATA_SOCKET_PORT);
-
 /// App server settings shared ref
 pub type FileSyncConfigRef = Arc<RwLock<FileSyncConfig>>;
-/// Shared UDP socket ref
-pub type UdpSocketMutex = Arc<Mutex<UdpSocket>>;
 
 pub struct FileSyncServer {
     config: FileSyncConfigRef,
@@ -52,14 +38,8 @@ pub struct FileSyncServer {
 }
 
 impl FileSyncServer {
-    pub fn new(
-        config: FileSyncConfigRef,
-        fs_cache: FsCacheRef,
-    ) -> Result<Self> {
-        Ok(Self {
-            config,
-            fs_cache,
-        })
+    pub fn new(config: FileSyncConfigRef, fs_cache: FsCacheRef) -> Result<Self> {
+        Ok(Self { config, fs_cache })
     }
 
     pub fn serve(&self, gui_receiver: Receiver<GuiEventRequest>) -> Result<()> {
@@ -70,12 +50,7 @@ impl FileSyncServer {
 
         let ignore_tracker = Arc::new(IgnoreTracker::new());
 
-        let control_socket = Arc::new(UdpSocket::bind(CONTROL_SOCKET_ADDR)?);
-        let data_socket = Arc::new(Mutex::new(UdpSocket::bind(DATA_SOCKET_ADDR)?));
-        data_socket
-            .lock()
-            .unwrap()
-            .set_read_timeout(Some(Duration::from_secs(5)))?;
+        let conn: PeerConnRef = Arc::new(PeerConn::bind()?);
         let (sender, receiver) = channel();
 
         let (sync_sender, sync_receiver) = channel();
@@ -83,8 +58,7 @@ impl FileSyncServer {
 
         self.get_publishers(
             sender,
-            data_socket.clone(),
-            control_socket.clone(),
+            conn.clone(),
             ignore_tracker.clone(),
             sync_sender,
             sync_receiver,
@@ -100,8 +74,7 @@ impl FileSyncServer {
         })?;
 
         let router = Router::new(
-            control_socket.clone(),
-            data_socket.clone(),
+            conn.clone(),
             self.config.clone(),
             ignore_tracker.clone(),
             self.fs_cache.clone(),
@@ -114,8 +87,7 @@ impl FileSyncServer {
     fn get_publishers(
         &self,
         sender: Sender<EventEnvelope>,
-        data_socket: Arc<Mutex<UdpSocket>>,
-        control_socket: Arc<UdpSocket>,
+        conn: PeerConnRef,
         ignore_tracker: Arc<IgnoreTracker>,
         sync_sender: Sender<SyncRequest>,
         sync_receiver: Receiver<SyncRequest>,
@@ -129,8 +101,7 @@ impl FileSyncServer {
                     sender.clone(),
                     self.config.clone(),
                     self.fs_cache.clone(),
-                    data_socket.clone(),
-                    control_socket.clone(),
+                    conn.clone(),
                 )),
             ),
             (
@@ -143,10 +114,7 @@ impl FileSyncServer {
             ),
             (
                 "ControlListenerPublisherThread".into(),
-                Box::new(ControlListenerPublisher::new(
-                    sender.clone(),
-                    control_socket.clone(),
-                )),
+                Box::new(ControlListenerPublisher::new(sender.clone(), conn.clone())),
             ),
             (
                 "FileWatcherPublisherThread".into(),

@@ -1,9 +1,10 @@
-use std::{net::UdpSocket, sync::Arc};
+use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use log::debug;
 
 use crate::{
+    conn::PeerConnRef,
     event::{
         EventEnvelope,
         subscriber::{
@@ -13,16 +14,14 @@ use crate::{
             fs_worker::FsWorkerSubscriber,
         },
     },
-    server::{FileSyncConfigRef, UdpSocketMutex},
+    server::FileSyncConfigRef,
     service::{fs_cache::FsCacheRef, ignore_tracker::IgnoreTracker},
 };
 
 /// Event router
 pub struct Router {
-    /// Control socket
-    control_socket: Arc<UdpSocket>,
-    /// Data socket
-    data_socket: UdpSocketMutex,
+    /// Peer connection shared reference
+    conn: PeerConnRef,
     /// Server settings shared reference
     config: FileSyncConfigRef,
     /// Event debouncer tracker
@@ -33,15 +32,13 @@ pub struct Router {
 
 impl Router {
     pub fn new(
-        control_socket: Arc<UdpSocket>,
-        data_socket: UdpSocketMutex,
+        conn: PeerConnRef,
         config: FileSyncConfigRef,
         ignore_tracker: Arc<IgnoreTracker>,
         fs_cache: FsCacheRef,
     ) -> Self {
         Self {
-            control_socket,
-            data_socket,
+            conn,
             config,
             ignore_tracker,
             fs_cache,
@@ -67,21 +64,20 @@ impl Router {
         }
         if EventAnnouncerSubscriber::filter(ee) {
             subs.push(Box::new(EventAnnouncerSubscriber::new(
-                self.control_socket.clone(),
+                self.conn.clone(),
                 self.config.clone(),
             )));
         }
         if FsTreeSenderSubscriber::filter(ee) {
             subs.push(Box::new(FsTreeSenderSubscriber::new(
-                self.data_socket.clone(),
+                self.conn.clone(),
                 self.config.clone(),
                 self.fs_cache.clone(),
             )));
         }
         if FileReceiverSubscriber::filter(ee) {
             subs.push(Box::new(FileReceiverSubscriber::new(
-                self.control_socket.clone(),
-                self.data_socket.clone(),
+                self.conn.clone(),
                 self.config.clone(),
                 self.ignore_tracker.clone(),
                 self.fs_cache.clone(),
@@ -89,7 +85,7 @@ impl Router {
         }
         if FileSenderSubscriber::filter(ee) {
             subs.push(Box::new(FileSenderSubscriber::new(
-                self.data_socket.clone(),
+                self.conn.clone(),
                 self.config.clone(),
                 self.fs_cache.clone(),
             )));

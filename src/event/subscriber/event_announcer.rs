@@ -1,21 +1,16 @@
-use std::{
-    net::{SocketAddr, UdpSocket},
-    sync::Arc,
-};
-
 use anyhow::{Result, bail};
 use log::debug;
 
 use crate::{
-    conn::request::{Request, RequestData},
+    conn::{PeerConnRef, request::RequestData},
     event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
-    server::{CONTROL_SOCKET_PORT, FileSyncConfigRef},
+    server::FileSyncConfigRef,
 };
 
 /// Announces events to peers
 pub struct EventAnnouncerSubscriber {
-    /// Control socket
-    control_socket: Arc<UdpSocket>,
+    /// Peer connection shared reference
+    conn: PeerConnRef,
     /// Server settings shared reference
     config: FileSyncConfigRef,
 }
@@ -36,44 +31,30 @@ impl Subscriber for EventAnnouncerSubscriber {
     fn act(&self, ee: &EventEnvelope) -> Result<()> {
         debug!("EventAnnouncerSubscriber acting");
 
-        let request = Request {
-            data: match &ee.event {
-                Event::FileCreated { path } => RequestData::NewFile { path: path.into() },
-                Event::FileDeleted { path } => RequestData::RemoveFile { path: path.into() },
-                Event::FileMoved { from, to } => RequestData::MovedFile {
-                    from: from.into(),
-                    to: to.into(),
-                },
-                Event::PeerAdded { addr } => RequestData::NewPeer { addr: *addr },
-                Event::PeerRemoved { addr } => RequestData::RemovePeer { addr: *addr },
-                _ => bail!("Operation not supported"),
+        let data = match &ee.event {
+            Event::FileCreated { path } => RequestData::NewFile { path: path.into() },
+            Event::FileDeleted { path } => RequestData::RemoveFile { path: path.into() },
+            Event::FileMoved { from, to } => RequestData::MovedFile {
+                from: from.into(),
+                to: to.into(),
             },
+            Event::PeerAdded { addr } => RequestData::NewPeer { addr: *addr },
+            Event::PeerRemoved { addr } => RequestData::RemovePeer { addr: *addr },
+            _ => bail!("Operation not supported"),
         };
-        let req_bytes: Box<[u8]> = request.into();
-        debug!(
-            "Sending request ({} bytes): {:?}",
-            req_bytes.len(),
-            String::from_utf8(req_bytes.to_vec())
-        );
 
-        self.config.read().unwrap().peers.iter().try_for_each(|ip| {
-            let addr = SocketAddr::new(*ip, CONTROL_SOCKET_PORT);
-            debug!("Sending to address {addr}");
-
-            self.control_socket
-                .send_to(&req_bytes, addr)
-                .map(|_| ())
-                .map_err(anyhow::Error::msg)
-        })
+        self.config
+            .read()
+            .unwrap()
+            .peers
+            .iter()
+            .try_for_each(|ip| self.conn.send_control(data.clone(), *ip))
     }
 }
 
 impl EventAnnouncerSubscriber {
-    pub fn new(control_socket: Arc<UdpSocket>, config: FileSyncConfigRef) -> Self {
-        Self {
-            control_socket,
-            config,
-        }
+    pub fn new(conn: PeerConnRef, config: FileSyncConfigRef) -> Self {
+        Self { conn, config }
     }
 }
 
@@ -81,14 +62,19 @@ impl EventAnnouncerSubscriber {
 mod tests {
     use std::{
         collections::HashSet,
-        net::{IpAddr, Ipv4Addr, SocketAddr},
+        net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
         path::PathBuf,
-        sync::RwLock,
+        sync::{Arc, RwLock},
         time::Duration,
     };
 
     use super::*;
-    use crate::{event::subscriber::Subscriber, server::config::FileSyncConfig, utils::test_net};
+    use crate::{
+        conn::{CONTROL_SOCKET_PORT, PeerConn, request::Request},
+        event::subscriber::Subscriber,
+        server::config::FileSyncConfig,
+        utils::test_net,
+    };
 
     fn envelope(source: EventSource, event: Event) -> EventEnvelope {
         EventEnvelope { source, event }
@@ -133,9 +119,6 @@ mod tests {
     #[test]
     fn test_filter_peer_events() {
         let events = [
-            Event::PeerRemoved {
-                addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            },
             Event::DownloadFile {
                 path: PathBuf::from("download.txt"),
             },
@@ -169,10 +152,14 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         let config = config_with_peer(IpAddr::V4(Ipv4Addr::LOCALHOST));
-        let subscriber = EventAnnouncerSubscriber::new(
-            Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()),
-            config,
+        let conn = Arc::new(
+            PeerConn::new(
+                UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
+                UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
+            )
+            .unwrap(),
         );
+        let subscriber = EventAnnouncerSubscriber::new(conn, config);
         let events = [
             (
                 Event::FileCreated {

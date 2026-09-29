@@ -77,8 +77,12 @@ impl FileSyncConfig {
     pub fn load_and_persist_patch(config_file: &PathBuf) -> Result<Self> {
         let mut config = Self::load(config_file)?;
 
-        let patch_file = config_file.parent()
-            .expect(&format!("Invalid config file path: {}", config_file.display()))
+        let patch_file = config_file
+            .parent()
+            .expect(&format!(
+                "Invalid config file path: {}",
+                config_file.display()
+            ))
             .join(CONFIG_PATCH_FILENAME);
         debug!("Searching for patch file at {}", patch_file.display());
         if patch_file.exists() {

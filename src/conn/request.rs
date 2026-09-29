@@ -30,7 +30,7 @@ impl TryFrom<&Vec<u8>> for Request {
 }
 
 /// Request data content
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RequestData {
     /// Add new peer
     NewPeer {

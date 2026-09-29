@@ -5,21 +5,21 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use log::warn;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    conn::request::{Request, RequestData},
+    conn::{PeerConnRef, request::RequestData},
     event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
-    server::{DATA_SOCKET_PORT, FileSyncConfigRef, UdpSocketMutex},
+    server::FileSyncConfigRef,
     service::fs_cache::FsCacheRef,
 };
 
 /// File content sender
 pub struct FileSenderSubscriber {
-    /// Data transfer socket
-    data_socket: UdpSocketMutex,
+    /// Peer connection shared reference
+    conn: PeerConnRef,
     /// Server settings shared reference
     config: FileSyncConfigRef,
     /// Shared FS cache reference
@@ -43,13 +43,9 @@ impl Subscriber for FileSenderSubscriber {
 }
 
 impl FileSenderSubscriber {
-    pub fn new(
-        data_socket: UdpSocketMutex,
-        config: FileSyncConfigRef,
-        fs_cache: FsCacheRef,
-    ) -> Self {
+    pub fn new(conn: PeerConnRef, config: FileSyncConfigRef, fs_cache: FsCacheRef) -> Self {
         Self {
-            data_socket,
+            conn,
             config,
             fs_cache,
         }
@@ -58,15 +54,12 @@ impl FileSenderSubscriber {
     /// Send file content to peer
     fn send_file(&self, addr: &SocketAddr, path: &PathBuf) -> Result<()> {
         // `addr` is the source of the control-socket request; replies must go to the peer's data socket instead
-        let addr = SocketAddr::new(addr.ip(), DATA_SOCKET_PORT);
+        let peer = addr.ip();
         let file = File::open(self.config.read().unwrap().sync_dir.join(path))?;
         let mut reader = BufReader::with_capacity(1000, file);
         let mut part = 0;
         let mut hasher = Sha256::new();
-        let socket = self
-            .data_socket
-            .lock()
-            .map_err(|e| anyhow!("Error acquiring data socket lock: {e}"))?;
+        let channel = self.conn.data_channel()?;
 
         loop {
             part += 1;
@@ -76,15 +69,14 @@ impl FileSenderSubscriber {
                 let len = buffer.len();
                 hasher.update(buffer);
 
-                let request = Request {
-                    data: RequestData::FileContent {
+                channel.send(
+                    RequestData::FileContent {
                         path: path.into(),
                         part,
                         content: buffer.into(),
                     },
-                };
-                let req_bytes: Box<[u8]> = request.into();
-                socket.send_to(&req_bytes, addr)?;
+                    peer,
+                )?;
 
                 len
             };
@@ -102,11 +94,7 @@ impl FileSenderSubscriber {
                 path.display()
             )
         }
-        let request = Request {
-            data: RequestData::EndOfFile { sha256: hash },
-        };
-        let req_bytes: Box<[u8]> = request.into();
-        socket.send_to(&req_bytes, addr)?;
+        channel.send(RequestData::EndOfFile { sha256: hash }, peer)?;
 
         Ok(())
     }
@@ -126,6 +114,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        conn::{DATA_SOCKET_PORT, PeerConn, request::Request},
         event::{Event, EventEnvelope, EventSource},
         server::config::FileSyncConfig,
         service::fs_cache::FsCache,
@@ -194,9 +183,13 @@ mod tests {
         receiver
             .set_read_timeout(Some(std::time::Duration::from_secs(1)))
             .unwrap();
-        let sender = Arc::new(std::sync::Mutex::new(
-            UdpSocket::bind("127.0.0.1:0").unwrap(),
-        ));
+        let sender = Arc::new(
+            PeerConn::new(
+                UdpSocket::bind("127.0.0.1:0").unwrap(),
+                UdpSocket::bind("127.0.0.1:0").unwrap(),
+            )
+            .unwrap(),
+        );
         let subscriber = FileSenderSubscriber::new(sender, config.clone(), fs_cache.clone());
 
         subscriber

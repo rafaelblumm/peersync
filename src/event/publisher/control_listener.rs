@@ -1,13 +1,10 @@
-use std::{
-    net::UdpSocket,
-    sync::{Arc, mpsc::Sender},
-};
+use std::sync::mpsc::Sender;
 
 use anyhow::{Result, bail};
 use log::{debug, error};
 
 use crate::{
-    conn::request::{Request, RequestData},
+    conn::{PeerConnRef, request::RequestData},
     event::{Event, EventEnvelope, EventSource, publisher::Publisher},
 };
 
@@ -15,8 +12,8 @@ use crate::{
 pub struct ControlListenerPublisher {
     /// Broker sender channel
     sender: Sender<EventEnvelope>,
-    /// Control socket
-    control_socket: Arc<UdpSocket>,
+    /// Peer connection shared reference
+    conn: PeerConnRef,
 }
 
 impl Publisher for ControlListenerPublisher {
@@ -27,20 +24,18 @@ impl Publisher for ControlListenerPublisher {
     fn run(&self) -> Result<()> {
         debug!("ControlListenerPublisher started");
 
-        let mut buf = vec![0; 65_535];
         loop {
-            let (received, src) = self.control_socket.recv_from(&mut buf)?;
-            let request_buf = buf[..received].to_vec();
-            let request = match Request::try_from(&request_buf) {
-                Ok(r) => r,
+            let (src, parsed) = self.conn.recv_control()?;
+            let data = match parsed {
+                Ok(d) => d,
                 Err(e) => {
-                    error!("Error parsing request buffer ('{request_buf:?}'): {e}");
+                    error!("Error parsing request from {src}: {e}");
                     continue;
                 }
             };
             let envelope = EventEnvelope {
                 source: EventSource::Peer(src),
-                event: match request.data {
+                event: match data {
                     RequestData::NewPeer { addr } => Event::PeerAdded { addr },
                     RequestData::RemovePeer { addr } => Event::PeerRemoved { addr },
                     RequestData::GetFileContent { path } => Event::UploadFile { path },
@@ -67,25 +62,26 @@ impl Publisher for ControlListenerPublisher {
 }
 
 impl ControlListenerPublisher {
-    pub fn new(sender: Sender<EventEnvelope>, control_socket: Arc<UdpSocket>) -> Self {
-        Self {
-            sender,
-            control_socket,
-        }
+    pub fn new(sender: Sender<EventEnvelope>, conn: PeerConnRef) -> Self {
+        Self { sender, conn }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
-        net::{IpAddr, Ipv4Addr, SocketAddr},
+        net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
         path::PathBuf,
-        sync::mpsc::{Receiver, channel},
+        sync::{
+            Arc,
+            mpsc::{Receiver, channel},
+        },
         thread::{self, JoinHandle},
         time::Duration,
     };
 
     use super::*;
+    use crate::conn::{PeerConn, request::Request};
 
     fn start_publisher() -> (
         UdpSocket,
@@ -98,8 +94,10 @@ mod tests {
             .set_read_timeout(Some(Duration::from_millis(100)))
             .unwrap();
         let destination = control_socket.local_addr().unwrap();
+        let data_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let (sender, receiver) = channel();
-        let publisher = ControlListenerPublisher::new(sender, Arc::new(control_socket));
+        let conn = Arc::new(PeerConn::new(control_socket, data_socket).unwrap());
+        let publisher = ControlListenerPublisher::new(sender, conn);
         let handle = thread::spawn(move || publisher.run());
         let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
 

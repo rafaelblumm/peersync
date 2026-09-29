@@ -1,8 +1,7 @@
 use std::sync::mpsc::Sender;
 
 use crate::{
-    event::publisher::gui_listener::GuiEventRequest,
-    server::FileSyncConfigRef,
+    event::publisher::gui_listener::GuiEventRequest, server::FileSyncConfigRef,
     service::fs_cache::FsCacheRef,
 };
 

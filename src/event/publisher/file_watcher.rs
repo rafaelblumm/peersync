@@ -17,9 +17,9 @@ use notify::{
 use notify_debouncer_full::{DebouncedEvent, RecommendedCache, new_debouncer_opt};
 
 use crate::{
-    event::{
-        Event, EventEnvelope, EventSource, publisher::Publisher,
-    }, server::FileSyncConfigRef, service::ignore_tracker::IgnoreTracker,
+    event::{Event, EventEnvelope, EventSource, publisher::Publisher},
+    server::FileSyncConfigRef,
+    service::ignore_tracker::IgnoreTracker,
 };
 
 /// File-system event watcher
@@ -176,10 +176,7 @@ impl FileWatcherPublisher {
     where
         F: Fn(PathBuf) -> Event,
     {
-        paths
-            .iter()
-            .map(|p| f(self.strip_sync_dir(p)))
-            .collect()
+        paths.iter().map(|p| f(self.strip_sync_dir(p))).collect()
     }
 
     /// Strip sync dir from file path
@@ -193,10 +190,13 @@ impl FileWatcherPublisher {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashSet, fs, process, sync::{
+        collections::HashSet,
+        fs, process,
+        sync::{
             Arc, RwLock,
             mpsc::{Receiver, channel},
-        }, time::Instant,
+        },
+        time::Instant,
     };
 
     use notify::{Event as NotifyEvent, event::EventAttributes};

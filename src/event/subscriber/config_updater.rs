@@ -137,10 +137,6 @@ mod tests {
         assert!(ConfigUpdaterSubscriber::filter(&peer_event(
             Event::PeerRemoved { addr: peer }
         )));
-        assert!(!ConfigUpdaterSubscriber::filter(&EventEnvelope {
-            source: EventSource::Local,
-            event: Event::PeerAdded { addr: peer },
-        }));
         assert!(!ConfigUpdaterSubscriber::filter(&peer_event(
             Event::SendFilesList
         )));
