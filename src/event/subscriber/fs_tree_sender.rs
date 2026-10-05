@@ -1,24 +1,23 @@
 use std::{
-    net::{SocketAddr, UdpSocket},
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::MutexGuard,
 };
 
 use anyhow::{Result, anyhow, bail};
 use log::debug;
 
 use crate::{
-    conn::request::{Request, RequestData},
+    conn::{DataChannel, PeerConnRef, request::RequestData},
     event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
-    server::{DATA_SOCKET_PORT, FileSyncConfigRef, UdpSocketMutex},
+    server::FileSyncConfigRef,
     service::fs_cache::FsCacheRef,
     utils::{dir_walker, is_valid_entry},
 };
 
 /// Announces file-system tree content
 pub struct FsTreeSenderSubscriber {
-    /// Data transfer socket
-    data_socket: UdpSocketMutex,
+    /// Peer connection shared reference
+    conn: PeerConnRef,
     /// Server settings shared reference
     config: FileSyncConfigRef,
     /// Shared FS cache reference
@@ -45,13 +44,9 @@ impl Subscriber for FsTreeSenderSubscriber {
 }
 
 impl FsTreeSenderSubscriber {
-    pub fn new(
-        data_socket: UdpSocketMutex,
-        config: FileSyncConfigRef,
-        fs_cache: FsCacheRef,
-    ) -> Self {
+    pub fn new(conn: PeerConnRef, config: FileSyncConfigRef, fs_cache: FsCacheRef) -> Self {
         Self {
-            data_socket,
+            conn,
             config,
             fs_cache,
         }
@@ -61,11 +56,8 @@ impl FsTreeSenderSubscriber {
         let sync_dir = self.config.read().unwrap().sync_dir.clone();
         let dir_walker = dir_walker(&sync_dir).into_iter();
 
-        let addr = SocketAddr::new(peer.ip(), DATA_SOCKET_PORT);
-        let socket = self
-            .data_socket
-            .lock()
-            .map_err(|e| anyhow!("Error acquiring data socket lock: {e}"))?;
+        let peer = peer.ip();
+        let mut channel = self.conn.data_channel()?;
         for entry in dir_walker.filter_entry(|entry| is_valid_entry(entry)) {
             let path = entry?.into_path();
             if path.is_file() {
@@ -73,42 +65,21 @@ impl FsTreeSenderSubscriber {
                     .strip_prefix(&sync_dir)
                     .map_err(|e| anyhow!("Could not make file path relative: {e}"))?
                     .to_path_buf();
-                self.send_path(&socket, relative_path, &addr)?;
+                self.send_path(&mut channel, relative_path, peer)?;
             }
         }
 
-        self.send_end(&socket, &addr)?;
+        channel.send(RequestData::EndOfTree, peer)?;
 
         Ok(())
     }
 
-    fn send_path(
-        &self,
-        socket: &MutexGuard<'_, UdpSocket>,
-        path: PathBuf,
-        addr: &SocketAddr,
-    ) -> Result<()> {
+    fn send_path(&self, channel: &mut DataChannel<'_>, path: PathBuf, peer: IpAddr) -> Result<()> {
         let sha256 = self.fs_cache.get_or_load_hash(&path)?;
 
         debug!("Sending file tree: {} {sha256}", path.display());
 
-        let request = Request {
-            data: RequestData::ListFiles { sha256, path },
-        };
-        let req_bytes: Box<[u8]> = request.into();
-        socket.send_to(&req_bytes, addr)?;
-
-        Ok(())
-    }
-
-    fn send_end(&self, socket: &MutexGuard<'_, UdpSocket>, addr: &SocketAddr) -> Result<()> {
-        let request = Request {
-            data: RequestData::EndOfTree,
-        };
-        let req_bytes: Box<[u8]> = request.into();
-        socket.send_to(&req_bytes, addr)?;
-
-        Ok(())
+        channel.send(RequestData::ListFiles { sha256, path }, peer)
     }
 }
 
@@ -117,7 +88,7 @@ mod tests {
     use std::{
         collections::HashSet,
         fs,
-        net::{Ipv4Addr, SocketAddr},
+        net::{Ipv4Addr, SocketAddr, UdpSocket},
         sync::{Arc, RwLock},
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -126,6 +97,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        conn::{DATA_SOCKET_PORT, PeerConn, request::Request},
         event::{Event, EventEnvelope, EventSource},
         server::config::FileSyncConfig,
         service::fs_cache::FsCache,
@@ -152,14 +124,15 @@ mod tests {
             cache_file: base.join("cache.yml"),
         }));
         let fs_cache = Arc::new(FsCache::load(config.clone()).unwrap());
-        let data_socket = Arc::new(std::sync::Mutex::new(
-            UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
-        ));
+        let conn = Arc::new(
+            PeerConn::new(
+                UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
+                UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
+            )
+            .unwrap(),
+        );
 
-        (
-            FsTreeSenderSubscriber::new(data_socket, config, fs_cache),
-            base,
-        )
+        (FsTreeSenderSubscriber::new(conn, config, fs_cache), base)
     }
 
     fn peer_event(event: Event) -> EventEnvelope {
@@ -198,24 +171,41 @@ mod tests {
         receiver
             .set_read_timeout(Some(std::time::Duration::from_secs(1)))
             .unwrap();
+        let peer = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            let mut buffer = [0; 1024];
+            loop {
+                let (size, src) = receiver.recv_from(&mut buffer).unwrap();
+                let data = RequestData::try_from(&buffer[..size].to_vec()).unwrap();
+                let ack: Box<[u8]> = Request {
+                    data: RequestData::Acknowledgement,
+                }
+                .into();
+                receiver.send_to(&ack, src).unwrap();
+
+                let is_end = data == RequestData::EndOfTree;
+                requests.push(data);
+                if is_end {
+                    break;
+                }
+            }
+
+            requests
+        });
+
         subscriber.act(&peer_event(Event::SendFilesList)).unwrap();
 
-        let mut buffer = [0; 1024];
-        let (size, _) = receiver.recv_from(&mut buffer).unwrap();
-        let first = RequestData::try_from(&buffer[..size].to_vec()).unwrap();
+        let requests = peer.join().unwrap();
         let expected_hash = hex::encode(Sha256::digest(b"content"));
         assert_eq!(
-            first,
-            RequestData::ListFiles {
-                sha256: expected_hash,
-                path: "nested/file.txt".into(),
-            }
-        );
-
-        let size = receiver.recv(&mut buffer).unwrap();
-        assert_eq!(
-            RequestData::try_from(&buffer[..size].to_vec()).unwrap(),
-            RequestData::EndOfTree
+            requests,
+            vec![
+                RequestData::ListFiles {
+                    sha256: expected_hash,
+                    path: "nested/file.txt".into(),
+                },
+                RequestData::EndOfTree,
+            ]
         );
 
         fs::remove_dir_all(base).unwrap();

@@ -76,36 +76,37 @@ impl AppView {
 
     /// Show directories settings panel
     fn show_dir_config_panel(&mut self, ui: &mut Ui) -> Option<AppResponse> {
-        Panel::bottom("bottom_panel").show(ui, |ui| {
-            ui.label("Diretório de sincronização");
-            TextEdit::singleline(&mut self.sync_dir)
-                .char_limit(255)
-                .desired_width(f32::INFINITY)
-                .ui(ui);
+        Panel::bottom("bottom_panel")
+            .show(ui, |ui| {
+                ui.label("Diretório de sincronização");
+                TextEdit::singleline(&mut self.sync_dir)
+                    .char_limit(255)
+                    .desired_width(f32::INFINITY)
+                    .ui(ui);
 
-            ui.label("Diretório temporário");
-            TextEdit::singleline(&mut self.tmp_dir)
-                .char_limit(255)
-                .desired_width(f32::INFINITY)
-                .ui(ui);
+                ui.label("Diretório temporário");
+                TextEdit::singleline(&mut self.tmp_dir)
+                    .char_limit(255)
+                    .desired_width(f32::INFINITY)
+                    .ui(ui);
 
-            ui.label("Arquivo de cache");
-            TextEdit::singleline(&mut self.cache_file)
-                .char_limit(255)
-                .desired_width(f32::INFINITY)
-                .ui(ui);
+                ui.label("Arquivo de cache");
+                TextEdit::singleline(&mut self.cache_file)
+                    .char_limit(255)
+                    .desired_width(f32::INFINITY)
+                    .ui(ui);
 
-            ui.add_space(3.0);
-            let res = ui.button("Atualizar (necessário reiniciar)");
-            ui.add_space(3.0);
+                ui.add_space(3.0);
+                let res = ui.button("Atualizar (necessário reiniciar)");
+                ui.add_space(3.0);
 
-            if res.clicked() {
-                Some(AppResponse::DirConfigUpdated)
-            } else {
-                None
-            }
-        })
-        .inner
+                if res.clicked() {
+                    Some(AppResponse::DirConfigUpdated)
+                } else {
+                    None
+                }
+            })
+            .inner
     }
 
     /// Show filesystem cache panel

@@ -1,31 +1,29 @@
 use std::{
     fs::{self, File},
     io::{BufWriter, Write},
-    net::{SocketAddr, UdpSocket},
+    net::SocketAddr,
     path::PathBuf,
     sync::Arc,
 };
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use log::{debug, warn};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    conn::request::{
-        Request,
-        RequestData::{self, GetFileContent},
+    conn::{
+        PeerConnRef,
+        request::RequestData::{self, GetFileContent},
     },
     event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
-    server::{FileSyncConfigRef, UdpSocketMutex},
+    server::FileSyncConfigRef,
     service::{fs_cache::FsCacheRef, ignore_tracker::IgnoreTracker},
 };
 
 /// File content receiver
 pub struct FileReceiverSubscriber {
-    /// Control socket
-    control_socket: Arc<UdpSocket>,
-    /// Data transfer socket
-    data_socket: UdpSocketMutex,
+    /// Peer connection shared reference
+    conn: PeerConnRef,
     /// Server settings shared reference
     config: FileSyncConfigRef,
     /// Event debouncer tracker
@@ -52,15 +50,13 @@ impl Subscriber for FileReceiverSubscriber {
 
 impl FileReceiverSubscriber {
     pub fn new(
-        control_socket: Arc<UdpSocket>,
-        data_socket: UdpSocketMutex,
+        conn: PeerConnRef,
         config: FileSyncConfigRef,
         ignore_tracker: Arc<IgnoreTracker>,
         fs_cache: FsCacheRef,
     ) -> Self {
         Self {
-            control_socket,
-            data_socket,
+            conn,
             config,
             ignore_tracker,
             fs_cache,
@@ -69,21 +65,10 @@ impl FileReceiverSubscriber {
 
     /// Requests file content from peer and writes buffer into file
     fn download_file(&self, addr: &SocketAddr, path: &PathBuf) -> Result<()> {
-        let request = Request {
-            data: GetFileContent { path: path.into() },
-        };
-        let req_bytes: Box<[u8]> = request.into();
+        self.conn
+            .reply_control(GetFileContent { path: path.into() }, *addr)?;
 
-        debug!(
-            "Sending request: {:?}",
-            String::from_utf8(req_bytes.to_vec())
-        );
-        self.control_socket.send_to(&req_bytes, addr)?;
-
-        let socket = self
-            .data_socket
-            .lock()
-            .map_err(|e| anyhow!("Error acquiring data socket lock: {e}"))?;
+        let mut channel = self.conn.data_channel()?;
 
         let tmp_path = self.config.read().unwrap().tmp_dir.join(path);
         if let Some(p) = tmp_path.parent() {
@@ -94,16 +79,12 @@ impl FileReceiverSubscriber {
         let tmp_file = File::create(&tmp_path)?;
         let mut f_writer = BufWriter::with_capacity(1000, tmp_file);
 
-        let mut sock_buf = vec![0; 65_535];
         let mut content_idx = 0;
         let mut hasher = Sha256::new();
         let expected_hash;
         loop {
-            let (received, _) = socket.recv_from(&mut sock_buf)?;
-            let chunk = sock_buf[..received].to_vec();
-            let req = Request::try_from(&chunk)?;
-            debug!("Received bytes: {:?}", String::from_utf8(chunk));
-            if let RequestData::FileContent { part, content, .. } = req.data {
+            let data = channel.recv()?;
+            if let RequestData::FileContent { part, content, .. } = data {
                 content_idx += 1;
                 if part != content_idx {
                     bail!("Unordered file content")
@@ -111,7 +92,7 @@ impl FileReceiverSubscriber {
 
                 hasher.update(&content);
                 f_writer.write_all(&content)?;
-            } else if let RequestData::EndOfFile { sha256 } = req.data {
+            } else if let RequestData::EndOfFile { sha256 } = data {
                 expected_hash = Some(sha256);
                 break;
             }
@@ -156,9 +137,9 @@ mod tests {
     use std::{
         collections::HashSet,
         env, fs,
-        net::{Ipv4Addr, SocketAddr},
+        net::{Ipv4Addr, SocketAddr, UdpSocket},
         path::PathBuf,
-        sync::{Arc, Mutex, RwLock},
+        sync::{Arc, RwLock},
         thread,
         time::{SystemTime, UNIX_EPOCH},
     };
@@ -166,7 +147,11 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::*;
-    use crate::{server::config::FileSyncConfig, service::fs_cache::FsCache};
+    use crate::{
+        conn::{PeerConn, request::Request},
+        server::config::FileSyncConfig,
+        service::fs_cache::FsCache,
+    };
 
     struct TestContext {
         base: PathBuf,
@@ -196,15 +181,15 @@ mod tests {
                 cache_file: base.join("cache.yml"),
             }));
             let fs_cache = Arc::new(FsCache::load(config.clone()).unwrap());
-            let subscriber = FileReceiverSubscriber::new(
-                Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap()),
-                Arc::new(Mutex::new(
+            let conn = Arc::new(
+                PeerConn::new(
                     UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
-                )),
-                config,
-                Arc::new(IgnoreTracker::new()),
-                fs_cache,
+                    UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap(),
+                )
+                .unwrap(),
             );
+            let subscriber =
+                FileReceiverSubscriber::new(conn, config, Arc::new(IgnoreTracker::new()), fs_cache);
 
             Self { base, subscriber }
         }
@@ -245,42 +230,55 @@ mod tests {
 
         let control_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let peer_addr = control_socket.local_addr().unwrap();
-        let data_addr = {
-            let socket = ctx.subscriber.data_socket.lock().unwrap();
-            socket.local_addr().unwrap()
-        };
+        let data_addr = ctx
+            .subscriber
+            .conn
+            .data_channel()
+            .unwrap()
+            .local_addr()
+            .unwrap();
 
         let expected_path = path.clone();
         let response = thread::spawn(move || {
+            let ack: Box<[u8]> = Request {
+                data: RequestData::Acknowledgement,
+            }
+            .into();
             let mut buf = [0; 1500];
-            let (received, _) = control_socket.recv_from(&mut buf).unwrap();
+            let (received, src) = control_socket.recv_from(&mut buf).unwrap();
             let request = Request::try_from(&buf[..received].to_vec()).unwrap();
             assert!(matches!(
                 request.data,
                 RequestData::GetFileContent { path, .. } if path == expected_path
             ));
+            control_socket.send_to(&ack, src).unwrap();
+
+            let mut send_acked = |request: Request| {
+                control_socket
+                    .send_to(&Box::<[u8]>::from(request), data_addr)
+                    .unwrap();
+                let (received, _) = control_socket.recv_from(&mut buf).unwrap();
+                assert_eq!(
+                    RequestData::try_from(&buf[..received].to_vec()).unwrap(),
+                    RequestData::Acknowledgement
+                );
+            };
 
             for (part, chunk) in payload.chunks(5).enumerate() {
-                let request = Request {
+                send_acked(Request {
                     data: RequestData::FileContent {
                         path: expected_path.clone(),
                         part: (part + 1) as u32,
                         content: chunk.to_vec(),
                     },
-                };
-                control_socket
-                    .send_to(&Box::<[u8]>::from(request), data_addr)
-                    .unwrap();
+                });
             }
 
-            let request = Request {
+            send_acked(Request {
                 data: RequestData::EndOfFile {
                     sha256: response_hash,
                 },
-            };
-            control_socket
-                .send_to(&Box::<[u8]>::from(request), data_addr)
-                .unwrap();
+            });
         });
 
         ctx.subscriber

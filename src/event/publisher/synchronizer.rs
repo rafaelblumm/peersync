@@ -1,21 +1,18 @@
 use std::{
     collections::HashMap,
-    net::{IpAddr, SocketAddr, UdpSocket},
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::{
-        Arc, MutexGuard,
-        mpsc::{Receiver, Sender},
-    },
+    sync::mpsc::{Receiver, Sender},
     time::SystemTime,
 };
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use log::{debug, error, info};
 
 use crate::{
-    conn::request::{Request, RequestData},
+    conn::{CONTROL_SOCKET_PORT, DataChannel, PeerConnRef, request::RequestData},
     event::{Event, EventEnvelope, EventSource, publisher::Publisher},
-    server::{CONTROL_SOCKET_PORT, FileSyncConfigRef, UdpSocketMutex},
+    server::FileSyncConfigRef,
     service::fs_cache::FsCacheRef,
     utils::{dir_walker, is_valid_entry},
 };
@@ -38,10 +35,8 @@ pub struct SyncPublisher {
     config: FileSyncConfigRef,
     /// Shared FS cache reference
     fs_cache: FsCacheRef,
-    /// Data transfer socket
-    data_socket: UdpSocketMutex,
-    /// Control socket
-    control_socket: Arc<UdpSocket>,
+    /// Peer connection shared reference
+    conn: PeerConnRef,
 }
 
 impl Publisher for SyncPublisher {
@@ -76,16 +71,14 @@ impl SyncPublisher {
         sender: Sender<EventEnvelope>,
         config: FileSyncConfigRef,
         fs_cache: FsCacheRef,
-        data_socket: UdpSocketMutex,
-        control_socket: Arc<UdpSocket>,
+        conn: PeerConnRef,
     ) -> Self {
         Self {
             sync_receiver,
             sender,
             config,
             fs_cache,
-            data_socket,
-            control_socket,
+            conn,
         }
     }
 
@@ -122,14 +115,11 @@ impl SyncPublisher {
             );
         }
 
-        let socket = self
-            .data_socket
-            .lock()
-            .map_err(|e| anyhow!("Could not acquire data socket lock: {e}"))?;
+        let mut channel = self.conn.data_channel()?;
 
         self.fs_cache.update_all_if_old()?;
 
-        for ee in self.get_files_to_sync(&socket, conflict_resolution_time_opt)? {
+        for ee in self.get_files_to_sync(&mut channel, conflict_resolution_time_opt)? {
             if let Err(e) = self.publish(ee) {
                 error!("Error publishing sync event: {e}")
             }
@@ -140,11 +130,11 @@ impl SyncPublisher {
 
     fn get_files_to_sync(
         &self,
-        socket: &MutexGuard<'_, UdpSocket>,
+        channel: &mut DataChannel<'_>,
         conflict_resolution_time_opt: Option<SystemTime>,
     ) -> Result<Vec<EventEnvelope>> {
         let sync_dir = self.config.read().unwrap().sync_dir.clone();
-        let peer_files = self.list_peers_files(socket)?;
+        let peer_files = self.list_peers_files(channel)?;
 
         let mut sync_events: Vec<EventEnvelope> = peer_files
             .iter()
@@ -216,7 +206,7 @@ impl SyncPublisher {
 
     fn list_peers_files(
         &self,
-        socket: &MutexGuard<'_, UdpSocket>,
+        channel: &mut DataChannel<'_>,
     ) -> Result<HashMap<PathBuf, (String, IpAddr)>> {
         let peers = self.config.read().unwrap().peers.clone();
         let mut files_map = HashMap::new();
@@ -226,7 +216,7 @@ impl SyncPublisher {
 
         let mut errors = 0;
         for p in &peers {
-            match self.get_peer_file_tree(socket, p) {
+            match self.get_peer_file_tree(channel, p) {
                 Ok(files) => files.into_iter().for_each(|(f, hash)| {
                     files_map.insert(f, (hash, p.clone()));
                 }),
@@ -245,26 +235,17 @@ impl SyncPublisher {
 
     fn get_peer_file_tree(
         &self,
-        socket: &MutexGuard<'_, UdpSocket>,
+        channel: &mut DataChannel<'_>,
         peer: &IpAddr,
     ) -> Result<Vec<(PathBuf, String)>> {
         debug!("Requesting file tree from peer {peer}");
 
-        let request = Request {
-            data: RequestData::GetFileTree,
-        };
-        let req_bytes: Box<[u8]> = request.into();
-        let addr = SocketAddr::new(peer.clone(), CONTROL_SOCKET_PORT);
-        self.control_socket.send_to(&req_bytes, addr)?;
+        self.conn.send_control(RequestData::GetFileTree, *peer)?;
 
         debug!("Waiting for peer {peer} file tree in data socket");
         let mut files = vec![];
-        let mut sock_buf = vec![0; 65_535];
         loop {
-            let (received, _) = socket.recv_from(&mut sock_buf)?;
-            let chunk = sock_buf[..received].to_vec();
-            let req = Request::try_from(&chunk)?;
-            match req.data {
+            match channel.recv()? {
                 RequestData::ListFiles { sha256, path } => {
                     debug!("Received file: {} {sha256}", path.display());
                     files.push((path, sha256))
@@ -283,14 +264,19 @@ mod tests {
     use std::{
         collections::HashSet,
         env, fs,
-        net::{IpAddr, Ipv4Addr},
-        sync::{Arc, Mutex, RwLock, mpsc::channel},
+        net::{IpAddr, Ipv4Addr, UdpSocket},
+        sync::{Arc, RwLock, mpsc::channel},
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use super::*;
-    use crate::{server::config::FileSyncConfig, service::fs_cache::FsCache, utils::test_net};
+    use crate::{
+        conn::{PeerConn, request::Request},
+        server::config::FileSyncConfig,
+        service::fs_cache::FsCache,
+        utils::test_net,
+    };
 
     /// Test context to cleanup filesystem after test execution
     struct TestContext {
@@ -330,8 +316,13 @@ mod tests {
                     sender,
                     config,
                     fs_cache,
-                    Arc::new(Mutex::new(UdpSocket::bind("127.0.0.1:0").unwrap())),
-                    Arc::new(UdpSocket::bind("127.0.0.1:0").unwrap()),
+                    Arc::new(
+                        PeerConn::new(
+                            UdpSocket::bind("127.0.0.1:0").unwrap(),
+                            UdpSocket::bind("127.0.0.1:0").unwrap(),
+                        )
+                        .unwrap(),
+                    ),
                 ),
             }
         }
@@ -379,11 +370,11 @@ mod tests {
         let context = TestContext::new(HashSet::new());
         let path = PathBuf::from("new.txt");
         fs::write(context.sync_dir().join(&path), "new").unwrap();
-        let socket = context.publisher.data_socket.lock().unwrap();
+        let mut channel = context.publisher.conn.data_channel().unwrap();
 
         let events = context
             .publisher
-            .get_files_to_sync(&socket, Some(UNIX_EPOCH))
+            .get_files_to_sync(&mut channel, Some(UNIX_EPOCH))
             .unwrap();
 
         assert_eq!(
@@ -400,11 +391,14 @@ mod tests {
         let context = TestContext::new(HashSet::new());
         let path = PathBuf::from("old.txt");
         fs::write(context.sync_dir().join(&path), "old").unwrap();
-        let socket = context.publisher.data_socket.lock().unwrap();
+        let mut channel = context.publisher.conn.data_channel().unwrap();
 
         let events = context
             .publisher
-            .get_files_to_sync(&socket, Some(SystemTime::now() + Duration::from_secs(60)))
+            .get_files_to_sync(
+                &mut channel,
+                Some(SystemTime::now() + Duration::from_secs(60)),
+            )
             .unwrap();
 
         assert_eq!(
@@ -420,11 +414,11 @@ mod tests {
     fn test_get_sync_files_ignored_directories() {
         let context = TestContext::new(HashSet::new());
         fs::create_dir(context.sync_dir().join("nested")).unwrap();
-        let socket = context.publisher.data_socket.lock().unwrap();
+        let mut channel = context.publisher.conn.data_channel().unwrap();
 
         let events = context
             .publisher
-            .get_files_to_sync(&socket, Some(UNIX_EPOCH))
+            .get_files_to_sync(&mut channel, Some(UNIX_EPOCH))
             .unwrap();
 
         assert!(events.is_empty());
@@ -438,35 +432,43 @@ mod tests {
         let control_socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, CONTROL_SOCKET_PORT)).unwrap();
         let data_addr = context
             .publisher
-            .data_socket
-            .lock()
+            .conn
+            .data_channel()
             .unwrap()
             .local_addr()
             .unwrap();
         let peer_thread = thread::spawn(move || {
+            let ack: Box<[u8]> = Request {
+                data: RequestData::Acknowledgement,
+            }
+            .into();
             let mut request_buf = [0; 128];
-            control_socket.recv_from(&mut request_buf).unwrap();
-            let list_request = Request {
-                data: RequestData::ListFiles {
-                    sha256: "hash".into(),
-                    path: PathBuf::from("peer.txt"),
-                },
-            };
-            control_socket
-                .send_to(&Box::<[u8]>::from(list_request), data_addr)
-                .unwrap();
-            control_socket
-                .send_to(
-                    &Box::<[u8]>::from(Request {
-                        data: RequestData::EndOfTree,
-                    }),
-                    data_addr,
-                )
-                .unwrap();
-        });
-        let socket = context.publisher.data_socket.lock().unwrap();
+            let (_, src) = control_socket.recv_from(&mut request_buf).unwrap();
+            control_socket.send_to(&ack, src).unwrap();
 
-        let events = context.publisher.get_files_to_sync(&socket, None).unwrap();
+            let mut send_acked = |data: RequestData| {
+                control_socket
+                    .send_to(&Box::<[u8]>::from(Request { data }), data_addr)
+                    .unwrap();
+                let (received, _) = control_socket.recv_from(&mut request_buf).unwrap();
+                assert_eq!(
+                    RequestData::try_from(&request_buf[..received].to_vec()).unwrap(),
+                    RequestData::Acknowledgement
+                );
+            };
+
+            send_acked(RequestData::ListFiles {
+                sha256: "hash".into(),
+                path: PathBuf::from("peer.txt"),
+            });
+            send_acked(RequestData::EndOfTree);
+        });
+        let mut channel = context.publisher.conn.data_channel().unwrap();
+
+        let events = context
+            .publisher
+            .get_files_to_sync(&mut channel, None)
+            .unwrap();
 
         peer_thread.join().unwrap();
         assert_eq!(
