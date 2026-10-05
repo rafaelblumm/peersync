@@ -57,7 +57,7 @@ impl FsTreeSenderSubscriber {
         let dir_walker = dir_walker(&sync_dir).into_iter();
 
         let peer = peer.ip();
-        let channel = self.conn.data_channel()?;
+        let mut channel = self.conn.data_channel()?;
         for entry in dir_walker.filter_entry(|entry| is_valid_entry(entry)) {
             let path = entry?.into_path();
             if path.is_file() {
@@ -65,7 +65,7 @@ impl FsTreeSenderSubscriber {
                     .strip_prefix(&sync_dir)
                     .map_err(|e| anyhow!("Could not make file path relative: {e}"))?
                     .to_path_buf();
-                self.send_path(&channel, relative_path, peer)?;
+                self.send_path(&mut channel, relative_path, peer)?;
             }
         }
 
@@ -74,7 +74,7 @@ impl FsTreeSenderSubscriber {
         Ok(())
     }
 
-    fn send_path(&self, channel: &DataChannel<'_>, path: PathBuf, peer: IpAddr) -> Result<()> {
+    fn send_path(&self, channel: &mut DataChannel<'_>, path: PathBuf, peer: IpAddr) -> Result<()> {
         let sha256 = self.fs_cache.get_or_load_hash(&path)?;
 
         debug!("Sending file tree: {} {sha256}", path.display());
@@ -97,7 +97,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        conn::{DATA_SOCKET_PORT, PeerConn},
+        conn::{DATA_SOCKET_PORT, PeerConn, request::Request},
         event::{Event, EventEnvelope, EventSource},
         server::config::FileSyncConfig,
         service::fs_cache::FsCache,
@@ -171,24 +171,41 @@ mod tests {
         receiver
             .set_read_timeout(Some(std::time::Duration::from_secs(1)))
             .unwrap();
+        let peer = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            let mut buffer = [0; 1024];
+            loop {
+                let (size, src) = receiver.recv_from(&mut buffer).unwrap();
+                let data = RequestData::try_from(&buffer[..size].to_vec()).unwrap();
+                let ack: Box<[u8]> = Request {
+                    data: RequestData::Acknowledgement,
+                }
+                .into();
+                receiver.send_to(&ack, src).unwrap();
+
+                let is_end = data == RequestData::EndOfTree;
+                requests.push(data);
+                if is_end {
+                    break;
+                }
+            }
+
+            requests
+        });
+
         subscriber.act(&peer_event(Event::SendFilesList)).unwrap();
 
-        let mut buffer = [0; 1024];
-        let (size, _) = receiver.recv_from(&mut buffer).unwrap();
-        let first = RequestData::try_from(&buffer[..size].to_vec()).unwrap();
+        let requests = peer.join().unwrap();
         let expected_hash = hex::encode(Sha256::digest(b"content"));
         assert_eq!(
-            first,
-            RequestData::ListFiles {
-                sha256: expected_hash,
-                path: "nested/file.txt".into(),
-            }
-        );
-
-        let size = receiver.recv(&mut buffer).unwrap();
-        assert_eq!(
-            RequestData::try_from(&buffer[..size].to_vec()).unwrap(),
-            RequestData::EndOfTree
+            requests,
+            vec![
+                RequestData::ListFiles {
+                    sha256: expected_hash,
+                    path: "nested/file.txt".into(),
+                },
+                RequestData::EndOfTree,
+            ]
         );
 
         fs::remove_dir_all(base).unwrap();

@@ -59,7 +59,7 @@ impl FileSenderSubscriber {
         let mut reader = BufReader::with_capacity(1000, file);
         let mut part = 0;
         let mut hasher = Sha256::new();
-        let channel = self.conn.data_channel()?;
+        let mut channel = self.conn.data_channel()?;
 
         loop {
             part += 1;
@@ -192,21 +192,33 @@ mod tests {
         );
         let subscriber = FileSenderSubscriber::new(sender, config.clone(), fs_cache.clone());
 
+        let peer = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            let mut buffer = [0; 65_535];
+            loop {
+                let (received, src) = receiver.recv_from(&mut buffer).unwrap();
+                let request = Request::try_from(&buffer[..received].to_vec()).unwrap();
+                let ack: Box<[u8]> = Request {
+                    data: RequestData::Acknowledgement,
+                }
+                .into();
+                receiver.send_to(&ack, src).unwrap();
+
+                let is_eof = matches!(request.data, RequestData::EndOfFile { .. });
+                requests.push(request.data);
+                if is_eof {
+                    break;
+                }
+            }
+
+            requests
+        });
+
         subscriber
             .act(&peer_event(Event::UploadFile { path: path.clone() }))
             .unwrap();
 
-        let mut requests = Vec::new();
-        let mut buffer = [0; 65_535];
-        loop {
-            let (received, _) = receiver.recv_from(&mut buffer).unwrap();
-            let request = Request::try_from(&buffer[..received].to_vec()).unwrap();
-            let is_eof = matches!(request.data, RequestData::EndOfFile { .. });
-            requests.push(request.data);
-            if is_eof {
-                break;
-            }
-        }
+        let requests = peer.join().unwrap();
 
         assert_eq!(requests.len(), 4);
         assert_eq!(

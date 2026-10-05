@@ -65,6 +65,7 @@ mod tests {
         net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
         path::PathBuf,
         sync::{Arc, RwLock},
+        thread,
         time::Duration,
     };
 
@@ -197,15 +198,30 @@ mod tests {
             ),
         ];
 
-        for (event, expected_data) in events {
+        let expected: Vec<RequestData> = events.iter().map(|(_, data)| data.clone()).collect();
+        let peer = thread::spawn(move || {
+            let mut received = vec![];
+            for _ in 0..4 {
+                let mut bytes = [0; 1024];
+                let (read, src) = receiver.recv_from(&mut bytes).unwrap();
+                let request = Request::try_from(&bytes[..read].to_vec()).unwrap();
+                let ack: Box<[u8]> = Request {
+                    data: RequestData::Acknowledgement,
+                }
+                .into();
+                receiver.send_to(&ack, src).unwrap();
+                received.push(request.data);
+            }
+
+            received
+        });
+
+        for (event, _) in events {
             subscriber
                 .act(&envelope(EventSource::Local, event))
                 .unwrap();
-
-            let mut bytes = [0; 1024];
-            let (received, _) = receiver.recv_from(&mut bytes).unwrap();
-            let request = Request::try_from(&bytes[..received].to_vec()).unwrap();
-            assert_eq!(request.data, expected_data);
         }
+
+        assert_eq!(peer.join().unwrap(), expected);
     }
 }

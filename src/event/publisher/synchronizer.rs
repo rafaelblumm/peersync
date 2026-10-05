@@ -438,25 +438,30 @@ mod tests {
             .local_addr()
             .unwrap();
         let peer_thread = thread::spawn(move || {
+            let ack: Box<[u8]> = Request {
+                data: RequestData::Acknowledgement,
+            }
+            .into();
             let mut request_buf = [0; 128];
-            control_socket.recv_from(&mut request_buf).unwrap();
-            let list_request = Request {
-                data: RequestData::ListFiles {
-                    sha256: "hash".into(),
-                    path: PathBuf::from("peer.txt"),
-                },
+            let (_, src) = control_socket.recv_from(&mut request_buf).unwrap();
+            control_socket.send_to(&ack, src).unwrap();
+
+            let mut send_acked = |data: RequestData| {
+                control_socket
+                    .send_to(&Box::<[u8]>::from(Request { data }), data_addr)
+                    .unwrap();
+                let (received, _) = control_socket.recv_from(&mut request_buf).unwrap();
+                assert_eq!(
+                    RequestData::try_from(&request_buf[..received].to_vec()).unwrap(),
+                    RequestData::Acknowledgement
+                );
             };
-            control_socket
-                .send_to(&Box::<[u8]>::from(list_request), data_addr)
-                .unwrap();
-            control_socket
-                .send_to(
-                    &Box::<[u8]>::from(Request {
-                        data: RequestData::EndOfTree,
-                    }),
-                    data_addr,
-                )
-                .unwrap();
+
+            send_acked(RequestData::ListFiles {
+                sha256: "hash".into(),
+                path: PathBuf::from("peer.txt"),
+            });
+            send_acked(RequestData::EndOfTree);
         });
         let mut channel = context.publisher.conn.data_channel().unwrap();
 

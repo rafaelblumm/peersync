@@ -32,6 +32,8 @@ impl TryFrom<&Vec<u8>> for Request {
 /// Request data content
 #[derive(Clone, Debug, PartialEq)]
 pub enum RequestData {
+    /// Request acknowledgement signal
+    Acknowledgement,
     /// Add new peer
     NewPeer {
         /// Peer address
@@ -94,6 +96,7 @@ pub enum RequestData {
 impl From<&RequestData> for RequestVerb {
     fn from(val: &RequestData) -> Self {
         match val {
+            RequestData::Acknowledgement => RequestVerb::ACK,
             RequestData::NewPeer { .. } => RequestVerb::ADDP,
             RequestData::FileContent { .. } => RequestVerb::CAT,
             RequestData::EndOfFile { .. } => RequestVerb::EOF,
@@ -136,7 +139,9 @@ impl From<RequestData> for Vec<u8> {
             RequestData::ListFiles { sha256, path } => {
                 format!("{sha256} {}", path.display()).as_bytes().into()
             }
-            RequestData::EndOfTree | RequestData::GetFileTree => vec![],
+            RequestData::Acknowledgement | RequestData::EndOfTree | RequestData::GetFileTree => {
+                vec![]
+            }
         }
     }
 }
@@ -257,6 +262,7 @@ impl TryFrom<&Vec<u8>> for RequestData {
                 Ok(Self::RemovePeer { addr })
             }
             RequestVerb::TREE => Ok(RequestData::GetFileTree),
+            RequestVerb::ACK => Ok(RequestData::Acknowledgement),
         }
     }
 }
@@ -264,6 +270,8 @@ impl TryFrom<&Vec<u8>> for RequestData {
 /// Request verb
 #[derive(Debug, PartialEq)]
 enum RequestVerb {
+    /// Acknowledgement signal
+    ACK,
     /// Add new peer
     ADDP,
     /// Get file content
@@ -291,6 +299,7 @@ enum RequestVerb {
 impl From<RequestVerb> for Vec<u8> {
     fn from(val: RequestVerb) -> Self {
         match val {
+            RequestVerb::ACK => b"ACK ",
             RequestVerb::ADDP => b"ADDP",
             RequestVerb::CAT => b"CAT ",
             RequestVerb::EOF => b"EOF ",
@@ -312,6 +321,7 @@ impl TryFrom<Vec<u8>> for RequestVerb {
 
     fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
         match value {
+            val if val == b"ACK " => Ok(RequestVerb::ACK),
             val if val == b"ADDP" => Ok(RequestVerb::ADDP),
             val if val == b"CAT " => Ok(RequestVerb::CAT),
             val if val == b"EOF " => Ok(RequestVerb::EOF),

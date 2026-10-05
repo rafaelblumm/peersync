@@ -49,6 +49,8 @@ impl Publisher for ControlListenerPublisher {
                     | RequestData::ListFiles { .. } => {
                         bail!("Data request in control socket")
                     }
+                    // Handled by `PeerConn`
+                    RequestData::Acknowledgement => continue,
                 },
             };
 

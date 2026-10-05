@@ -240,35 +240,45 @@ mod tests {
 
         let expected_path = path.clone();
         let response = thread::spawn(move || {
+            let ack: Box<[u8]> = Request {
+                data: RequestData::Acknowledgement,
+            }
+            .into();
             let mut buf = [0; 1500];
-            let (received, _) = control_socket.recv_from(&mut buf).unwrap();
+            let (received, src) = control_socket.recv_from(&mut buf).unwrap();
             let request = Request::try_from(&buf[..received].to_vec()).unwrap();
             assert!(matches!(
                 request.data,
                 RequestData::GetFileContent { path, .. } if path == expected_path
             ));
+            control_socket.send_to(&ack, src).unwrap();
+
+            let mut send_acked = |request: Request| {
+                control_socket
+                    .send_to(&Box::<[u8]>::from(request), data_addr)
+                    .unwrap();
+                let (received, _) = control_socket.recv_from(&mut buf).unwrap();
+                assert_eq!(
+                    RequestData::try_from(&buf[..received].to_vec()).unwrap(),
+                    RequestData::Acknowledgement
+                );
+            };
 
             for (part, chunk) in payload.chunks(5).enumerate() {
-                let request = Request {
+                send_acked(Request {
                     data: RequestData::FileContent {
                         path: expected_path.clone(),
                         part: (part + 1) as u32,
                         content: chunk.to_vec(),
                     },
-                };
-                control_socket
-                    .send_to(&Box::<[u8]>::from(request), data_addr)
-                    .unwrap();
+                });
             }
 
-            let request = Request {
+            send_acked(Request {
                 data: RequestData::EndOfFile {
                     sha256: response_hash,
                 },
-            };
-            control_socket
-                .send_to(&Box::<[u8]>::from(request), data_addr)
-                .unwrap();
+            });
         });
 
         ctx.subscriber
