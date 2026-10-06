@@ -1,68 +1,146 @@
 # peersync
 
-UDP P2P file sync
+Sincronizador de arquivos peer-to-peer com conexão UDP.
 
-## System design
+## Executando a aplicação
 
-### Event-driven architecture
+Inicialmente, é necessário criar um arquivo YAML de configurações. Exemplo:
+
+```yaml
+sync_dir: /home/johndoe/Documents/sync
+tmp_dir: /tmp/peersync
+peers:
+- 127.0.0.1
+cache_file: /home/johndoe/Documents/peersync-cache.yaml
+```
+
+Em seguida, execute a aplicação pela linha de comando. Para iniciar
+no modo sem interface gráfica, informe o parâmetro `--daemon`.
+
+```bash
+# Com interface gráfica
+peersync --config /home/johndoe/Documents/peersync.yaml
+
+# Sem interface gráfica
+peersync --config /home/johndoe/Documents/peersync.yaml --daemon
+```
+
+É possível consultar os parâmetros disponíveis com `--help`:
+
+```plaintext
+$ peersync --help
+
+Peer-to-peer UDP file sync application
+
+Usage: peersync [OPTIONS]
+
+Options:
+  -c, --config <CONFIG>  Application settings file [default: ./config.yml]
+  -d, --daemon           Start server in daemon mode, no GUI
+  -h, --help             Print help
+  -V, --version          Print version
+```
+
+## Design do sistema
+
+### Arquitetura orientada a eventos
 
 ```mermaid
 ---
 title: Event flow
 ---
 flowchart TD
-    subgraph Event Producers
-        csock@{ label: "Control socket", shape: event }
-        fs@{ label: "Sync directory", shape: lin-cyl }
-        ui@{ label: "Graphical user\ninterface", shape: person }
-        start@{ label: "App startup", shape: console }
+    subgraph Produtores
+        csock@{ label: "Socket de controle", shape: event }
+        fs@{ label: "Diretório de\nsincronização", shape: lin-cyl }
+        ui@{ label: "Interface gráfica", shape: person }
+        start@{ label: "Inicialização da\naplicação", shape: console }
     end
 
-    subgraph Publishers
-        ctrl@{ label: "Control Listener", shape: subprocess }
+    subgraph "Publicadores (publishers)"
+        ctrl@{ label: "Listener de controle", shape: subprocess }
         fwatch@{ label: "File Watcher", shape: subprocess }
-        gui@{ label: "GUI Listener", shape: subprocess }
-        sync@{ label: "Synchronizer", shape: subprocess }
+        gui@{ label: "Listener da GUI", shape: subprocess }
+        sync@{ label: "Sincronizador", shape: subprocess }
     end
 
-    subgraph Orchestrators
-        broker@{ label: "Event Broker", shape: in-out }
-        router@{ label: "Event Router", shape: out-in }
+    subgraph Orquestradores
+        broker@{ label: "Broker de eventos", shape: in-out }
+        router@{ label: "Roteador de eventos", shape: out-in }
     end
 
-    subgraph Subscribers
-        cfg[Config\nUpdater]
-        evt[Event\nAnnouncer]
-        rcvr[File\nReceiver]
-        sendr[File\nSender]
-        tree[File-system\nTree Sender]
-        fswrk[File-system\nworker]
+    subgraph "Assinantes (subscribers)"
+        cfg[Atualizador de\nconfigurações]
+        evt[Anunciador\nde eventos]
+        rcvr[Recebedor de\narquivos]
+        sendr[Enviador de\narquivos]
+        tree[Enviador de\nárvore de\narquivos]
+        fswrk[Worker de\nsistema de arquivos]
     end
 
-    subgraph Activities
+    subgraph Atividades
         subgraph Local
-            upcfg@{ label: "Update config file", shape: terminal}
-            upfs@{ label: "Update sync directory", shape: terminal}
+            upcfg@{ label: "Atualizar arquivo de configurações", shape: terminal}
+            upfs@{ label: "Atualizar diretório de sincronização", shape: terminal}
         end
 
-        subgraph "Outward (to peers)"
-            sevt@{ label: "Send event", shape: terminal }
-            sdt@{ label: "Send data", shape: terminal }
+        subgraph "Externo (para peers)"
+            sevt@{ label: "Enviar evento", shape: terminal }
+            sdt@{ label: "Enviar dados", shape: terminal }
         end
     end
 
-    csock -. Peer request .-> ctrl --> broker
-    fs -. File modification event .-> fwatch --> broker
-    ui -. User request .-> gui --> broker
-    start -. Initialization sync request .-> sync
-    gui -. Forced sync request .-> sync --> broker
+    csock -. Requisição de peer .-> ctrl --> broker
+    fs -. Evento de modificação de arquivo .-> fwatch --> broker
+    ui -. Requisição do usuário .-> gui --> broker
+    start -. Requisição da inicialização da aplicação .-> sync
+    gui -. Requisição de sincronização forçada .-> sync --> broker
 
-    broker -. Event envelope with metadata .-> router
+    broker -. Evento e seus metadados .-> router
 
-    router --> evt -. Local sync events .-> sevt
-    router --> sendr -. File requested by peer .-> sdt
-    router --> tree -. Sync directory tree .-> sdt
-    router --> cfg -. New settings .-> upcfg
-    router --> rcvr -. File requested to peer .-> upfs
-    router --> fswrk -. General FS work .-> upfs
+    router --> evt -. Eventos locais de sincronização .-> sevt
+    router --> sendr -. Arquivo requisitado por peer .-> sdt
+    router --> tree -. Árvore de arquivos sincronizados .-> sdt
+    router --> cfg -. Nova configuração .-> upcfg
+    router --> rcvr -. Arquivo requisitado para peer .-> upfs
+    router --> fswrk -. Manipulações gerais no sistema de arquivos .-> upfs
 ```
+
+### Protocolo de comunicação
+
+#### Portas UDP
+
+- 5000: controle
+- 5001: dados
+
+#### Conteúdo de requisições
+
+- 4 primeiros bytes: verbo da requisição
+- Demais bytes: parâmetros separados por espaços
+
+| Verbo | Descrição | Parâmetros |
+| ----- | --------- | ---------- |
+| `ACK` | Reconhecimento da requisição | *-* |
+| `ADDP` | Adiciona novo peer | *Peer* |
+| `RMP` | Remove peer | *Peer* |
+| `TREE` | Solicita árvore de arquivos | *-* |
+| `LS` | Envia listagem de arquivos | *hash + arquivo* |
+| `LSE` | Finaliza envio da listagem de arquivos | *-* |
+| `GET` | Solicita conteúdo de arquivo | *arquivo* |
+| `CAT` | Envia conteúdo de arquivo | *arquivo + índice + conteúdo* |
+| `EOF` | End of file stream | *hash* |
+| `MV` | Anuncia que arquivo foi movido | *de + para* |
+| `NEW` | Anuncia que arquivo foi criado | *arquivo* |
+| `RM` | Anuncia que arquivo foi removido | *arquivo/diretório* |
+
+#### Controle de retentativas
+
+- 3 tentativas de comunicação até receber **ACK**
+- 5 segundos de timeout para cada tentativa
+
+#### Fluxo
+
+- Peer 1 envia requisição para Peer 2
+- Peer 2 responde com ACK
+- Peer 2 envia dados
+- Peer 1 responde com ACK

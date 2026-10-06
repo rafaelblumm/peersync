@@ -1,0 +1,5 @@
+sync_dir: /home/johndoe/Documents/sync
+tmp_dir: /tmp/peersync
+peers:
+- 127.0.0.1
+cache_file: /home/johndoe/Documents/peersync-cache.yaml
