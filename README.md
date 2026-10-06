@@ -2,6 +2,9 @@
 
 Sincronizador de arquivos peer-to-peer com conexão UDP.
 
+- **Autor:** Rafael Flores Blumm
+- **Disciplina:** *Redes de Computadores: Aplicação e Transporte (Unisinos 2026/2)*
+
 ## Executando a aplicação
 
 Inicialmente, é necessário criar um arquivo YAML de configurações. Exemplo:
