@@ -2,7 +2,10 @@ use anyhow::{Result, bail};
 use log::debug;
 
 use crate::{
-    conn::{PeerConnRef, request::RequestData},
+    conn::{
+        PeerConnRef,
+        request::RequestData,
+    },
     event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
     server::FileSyncConfigRef,
 };
@@ -32,15 +35,15 @@ impl Subscriber for EventAnnouncerSubscriber {
         debug!("EventAnnouncerSubscriber acting");
 
         let data = match &ee.event {
-            Event::FileCreated { path } => RequestData::NewFile { path: path.into() },
-            Event::FileDeleted { path } => RequestData::RemoveFile { path: path.into() },
-            Event::FileMoved { from, to } => RequestData::MovedFile {
-                from: from.into(),
-                to: to.into(),
-            },
-            Event::PeerAdded { addr } => RequestData::NewPeer { addr: *addr },
-            Event::PeerRemoved { addr } => RequestData::RemovePeer { addr: *addr },
-            _ => bail!("Operation not supported"),
+                Event::FileCreated { path } => RequestData::NewFile { path: path.into() },
+                Event::FileDeleted { path } => RequestData::RemoveFile { path: path.into() },
+                Event::FileMoved { from, to } => RequestData::MovedFile {
+                    from: from.into(),
+                    to: to.into(),
+                },
+                Event::PeerAdded { addr } => RequestData::NewPeer { addr: *addr },
+                Event::PeerRemoved { addr } => RequestData::RemovePeer { addr: *addr },
+                _ => bail!("Operation not supported"),
         };
 
         self.config
@@ -48,7 +51,8 @@ impl Subscriber for EventAnnouncerSubscriber {
             .unwrap()
             .peers
             .iter()
-            .try_for_each(|ip| self.conn.send_control(data.clone(), *ip))
+            .map(|ip| self.conn.send_control(data.clone(), *ip))
+            .collect()
     }
 }
 
