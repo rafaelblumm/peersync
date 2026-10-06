@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 use crate::{
     event::{Event, EventEnvelope, EventSource, subscriber::Subscriber},
@@ -65,6 +65,8 @@ impl FsWorkerSubscriber {
     }
 
     fn fs_rename(&self, from: &PathBuf, to: &PathBuf) -> Result<()> {
+        let target = self.normalize_path(to);
+        fs::create_dir_all(target.parent().ok_or(anyhow!("Invalid path"))?)?;
         fs::rename(self.normalize_path(from), self.normalize_path(to))?;
 
         if self.normalize_path(to).is_dir() {
