@@ -115,6 +115,7 @@ impl AppView {
             let spacing = &ui.style().spacing;
             let row_height = spacing.interact_size.y;
             let available_height = ui.available_height();
+            let entries: Vec<_> = self.fs_cache_entries.iter().collect();
 
             TableBuilder::new(ui)
                 .striped(true)
@@ -132,14 +133,13 @@ impl AppView {
                 })
                 .body(|body| {
                     body.rows(row_height, self.fs_cache_entries.len(), |mut row| {
-                        for (path, hash) in &self.fs_cache_entries {
-                            row.col(|ui| {
-                                ui.monospace(path);
-                            });
-                            row.col(|ui| {
-                                ui.monospace(hash);
-                            });
-                        }
+                        let (path, hash) = entries[row.index()];
+                        row.col(|ui| {
+                            ui.monospace(path);
+                        });
+                        row.col(|ui| {
+                            ui.monospace(hash);
+                        });
                     });
                 });
         });
